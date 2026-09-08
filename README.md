@@ -8,6 +8,8 @@
 
 - **多浏览器会话管理**：启动新浏览器（自动分配调试端口）或接管已在 `127.0.0.1:9222` 运行的浏览器，多会话并行
 - **核心浏览与元素操作**：导航、等待、元素定位（支持 5.0 的 `ax:` 无障碍定位与自动匹配模式）、点击/输入/悬停/下拉选择/勾选/滚动
+- **虚拟光标可视化**：所有真实鼠标交互伴随 Windows 11 深色高清虚拟光标——60FPS 缓动滑行、按下缩放、点击水波纹，自动化轨迹肉眼可追踪（`.env` 设 `SHOW_CURSOR=false` 关闭）
+- **AntV X6 流程图自动化**：审批流画布的拓扑提取、拖拽移节点、端口连线、双击配置、增删节点
 - **多账号隔离**：基于 5.0 的 `BrowserContext`，同一浏览器内维护多套独立 cookies
 - **结构化输出**：所有工具返回 Pydantic 模型，MCP 客户端获得结构化内容；失败抛出可读的中文错误供模型自行重试
 
@@ -25,18 +27,22 @@ uv sync
 DrissionPage-MCP/
 ├── fastmcp.json             # 官方声明式项目配置（fastmcp run 自动读取）
 ├── server.py                # 文件型入口：fastmcp run / inspect 指向的 mcp 实例
+├── .env.example             # 环境变量样例（SHOW_CURSOR 光标可视化开关）
 ├── src/drissionpage_mcp/
-│   ├── server.py            # 组合根：主服务器 + mount 各领域子服务器 + lifespan
+│   ├── server.py            # 组合根：主服务器 + mount 各领域子服务器 + lifespan + dev-tool 管控
 │   ├── tools/               # 按领域拆分的子服务器（官方 composition 模式）
 │   │   ├── browser.py    navigate.py    element.py    frame.py
 │   │   ├── action.py     antd.py        vtable.py     account.py
-│   │   └── snapshot.py
-│   ├── manager.py           # 浏览器会话/上下文/元素注册表
+│   │   └── snapshot.py   x6.py
+│   ├── manager.py           # 浏览器会话/上下文/元素注册表（含 DP 5.0.0b1 缺陷补丁）
 │   ├── vtable.py            # VTable 坐标换算层
-│   ├── vtable_scripts.py    # VTable JS 片段库
+│   ├── vtable_scripts.py    # VTable JS 片段库（含多粒度 inspect）
+│   ├── x6.py                # X6 画布会话与真实拖拽/连线
+│   ├── x6_scripts.py        # X6 JS 片段库（Fiber 绑定 / 拓扑提取）
+│   ├── cursor.py            # Win11 虚拟光标（60FPS 滑行 + 点击涟漪）
 │   ├── overlays.py          # 浮层观察器（arm/drain）
 │   └── models.py            # 输出模型
-└── tests/                   # 76 个单测（FastMCP 内存客户端）
+└── tests/                   # 103 个单测 + 1 个真浏览器冒烟（DPMCP_SMOKE=1 门控）
 ```
 
 ## 运行
@@ -63,20 +69,25 @@ uv run python -m drissionpage_mcp --transport http --port 8000
 }
 ```
 
-## 工具一览（56 个）
+## 工具一览（66 个）
+
+底层脚本工具 `run_js` 默认禁用且对客户端隐藏（`ENABLE_RUN_JS=true` 全局放开，
+或运行时 `enable_dev_tool` 临时解锁），避免绕过高阶领域工具。
 
 | 分组 | 工具 |
 |---|---|
-| 浏览器 | `browser_launch` `browser_connect` `browser_close` `browser_status` `run_js` |
+| 浏览器 | `browser_launch` `browser_connect` `browser_close` `browser_status` |
 | 标签页 | `tab_new` `tab_list` `tab_close` `tab_info` |
 | 导航 | `navigate` `navigate_back` `navigate_forward` `refresh` `wait_element` `get_page_info` `get_page_html` |
-| 元素 | `find_element` `find_elements` `element_info` `element_click` `element_input` `element_hover` `element_select` `element_check` `element_scroll` |
+| 元素 | `find_element` `find_elements` `element_info` `click`（通用：元素/选择器/坐标全能点击） `element_click` `element_input` `element_hover` `element_select` `element_check` `element_scroll` |
 | 多账号 | `context_new` `context_close` `context_list` `cookies_get` `cookies_set` `cookies_clear` |
 | iframe | `frame_list`（所有定位工具支持 `frame` 参数：`'active'`=激活态模块 / 序号 / id） |
 | 真实交互 | `action_chain`（move_to/click/hold/drag/scroll/type/key 步骤编排，CDP Input 事件级）`press_key` |
-| AntD 弹层 | `antd_select` `antd_get_options` `antd_date_pick` `antd_modal_click` `get_toasts` |
-| 页面快照 | `page_controls`（单次 JS 采集全部可交互控件，封顶 40 项） |
-| VTable | `vtable_info` `vtable_headers` `vtable_read_cells` `vtable_find_cell` `vtable_cell_info` `vtable_scroll_to_cell` `vtable_click_cell` `vtable_click_icon` `vtable_resolve_cell` `vtable_edit_cell` `vtable_get_selection` `vtable_cell_state` `vtable_scroll_viewport` `vtable_drag_scrollbar` `vtable_hover_cell` `vtable_cell_text` |
+| AntD 弹层 | `antd_select`（多选自动 ESC 收回） `antd_get_options` `antd_date_pick` `antd_modal_click` `get_toasts` |
+| 页面快照 | `page_controls`（单次 JS 采集可交互控件，封顶 40 项，含面包屑模块路径） |
+| VTable | `vtable_info` `vtable_inspect`（多粒度快照+交互锚点） `vtable_headers` `vtable_read_cells` `vtable_find_cell` `vtable_cell_info` `vtable_scroll_to_cell` `vtable_click_cell` `vtable_click_icon` `vtable_resolve_cell` `vtable_edit_cell` `vtable_get_selection` `vtable_cell_state` `vtable_scroll_viewport` `vtable_drag_scrollbar` `vtable_hover_cell` `vtable_cell_text` |
+| X6 流程图 | `x6_nodes` `x6_fit` `x6_move_node` `x6_connect` `x6_click_node` `x6_add_node` `x6_delete_node` |
+| 管控 | `enable_dev_tool` `disable_dev_tool`（临时解锁/锁定 `run_js`） |
 
 ### 会话模型
 
@@ -96,7 +107,28 @@ DrissionPage 的 tab 穿透检索在本 beta 中返回过期文档的幽灵节�
 `antd_select` / `antd_date_pick` 兼容新旧两代类名（`.ant-select-item-option` 与
 `.ant-select-dropdown-menu-item`、`.ant-picker-*` 与 `.ant-calendar-*`）；
 `antd_modal_click` 自动定位最顶层可见弹窗并兼容无 footer 的定制弹窗；
+`antd_select` 对多选下拉在选中后自动派发 ESC 收回浮层，避免遮挡后续按钮；
 所有交互均为 Actions 真实鼠标事件。
+
+### 模块路径识别（面包屑为权威）
+
+`get_page_info` 与 `page_controls` 自动解析主框架 `.ant-breadcrumb` 并返回
+`breadcrumb` / `module_path` 字段。这是功能模块路径的**权威依据**，
+禁止凭 iframe 的 src/URL 猜测模块。
+
+### 开发者工具管控
+
+`run_js` 默认隐藏，防止模型绕过封装好的领域工具。需要底层调试时调用
+`enable_dev_tool(name, user_explicit_instruction)`（须附用户明确指示原话），
+完成后必须 `disable_dev_tool` 重新锁定。
+
+### AntV X6（流程图画布）原理
+
+注入 JS 经容器 React Fiber 扫描绑定 X6 Graph 实例（`window.__x6_graph`），
+合并图模型（节点业务数据/边关系）与 SVG DOM 几何（视口绝对坐标、端口中心）
+输出拓扑；拖移/连线均为真实 CDP 鼠标轨迹（拖拽时光标 1:1 线性同步）。
+`x6_delete_node` 以真实 Backspace 优先，未生效时回退图模型级 `removeCell`
+并在响应中以 `deleted_via` 标注——断言 UI 删除行为应校验 `deleted_via == "keyboard"`。
 
 ### 定位符语法（DrissionPage 5.0）
 

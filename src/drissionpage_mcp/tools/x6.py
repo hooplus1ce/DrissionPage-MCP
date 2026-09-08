@@ -174,6 +174,9 @@ def x6_delete_node(
 ) -> dict:
     """选中指定节点并模拟按 Backspace 键级联销毁该节点及关联连接线。
 
+    响应含 deleted_via：'keyboard'=真实键盘删除生效（UI 行为正确的证据）；
+    'api'=键盘删除未生效、由图模型级清理补删（断言 UI 删除行为时应视为失败）。
+
     Args:
         node: 目标节点 cellId（如 'n3'）或节点显示名称（如 '审批B'）
         tab_id: 标签页 id，省略时用最新激活标签页

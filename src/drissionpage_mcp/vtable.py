@@ -57,8 +57,8 @@ def _run(frame, name: str, *args) -> dict:
 def _require_bound(data: dict, action: str) -> None:
     if not data.get("bound", False):
         raise ToolError(
-            f"VTable 实例未绑定，无法{action}。请确认当前页面存在 VTable 表格"
-            "（先调用 vtable_list 查看），或用 vtable_info 显式指定 table_index"
+            f"VTable 实例未绑定，无法{action}。请确认激活页面存在 VTable 表格"
+            "（.vtable 容器），或用 vtable_info 指定 table_index 重试"
         )
 
 
@@ -107,7 +107,8 @@ def bind_vtable(tab_id: str | None, table_index: int | None) -> VTableSession:
     if not data.get("bound"):
         raise ToolError(
             "未能在当前页面绑定 VTable 实例（React Fiber 扫描未命中）。"
-            "请确认激活的功能模块页面中存在 VTable 表格，可用 vtable_list 查看"
+            "请确认激活的功能模块页面中存在 VTable 表格（legions-pro-vtable / "
+            ".vtable 容器），或用 vtable_info 指定 table_index 重试"
         )
     session = VTableSession(frame=frame, tab=tab)
     _refresh_offsets(session)

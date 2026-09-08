@@ -408,6 +408,7 @@ source = { editable = "." }
 dependencies = [
     { name = "drissionpage" },
     { name = "fastmcp" },
+    { name = "python-dotenv" },
 ]
 
 [package.dev-dependencies]
@@ -420,6 +421,7 @@ dev = [
 requires-dist = [
     { name = "drissionpage", specifier = "==5.0.0b1" },
     { name = "fastmcp", specifier = ">=4.0.3" },
+    { name = "python-dotenv", specifier = ">=1.0" },
 ]
 
 [package.metadata.requires-dev]

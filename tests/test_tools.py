@@ -300,7 +300,7 @@ async def test_page_info_and_controls_breadcrumb(client, seeded_manager):
 
 async def test_unified_click(client, seeded_manager):
     """测试统一全能 click 工具：支持 element_id、选择器、坐标点位与单双击。"""
-    _, _, tab = seeded_manager
+    session, _, tab = seeded_manager
     btn = FakeElement(tag="button", text="保 存")
     tab.ele_result = btn
 
@@ -308,6 +308,15 @@ async def test_unified_click(client, seeded_manager):
     res_sel = await client.call_tool("click", {"target": "text:保 存"})
     assert res_sel.data["ok"] is True
     assert "clicked" in res_sel.data
+
+    # 选择器路径注册的元素记录元数据必须完整（browser_id/tab_id/container）
+    from drissionpage_mcp.manager import manager as global_manager
+
+    rec = global_manager.get_record(res_sel.data["element_id"])
+    assert rec is not None
+    assert rec.browser_id == session.browser_id
+    assert rec.tab_id == tab.tab_id
+    assert rec.container is not None
 
     # 2. 坐标点位点击
     res_pt = await client.call_tool("click", {"point": {"x": 300, "y": 450}, "button": "right"})
@@ -319,3 +328,19 @@ async def test_unified_click(client, seeded_manager):
     res_dbl = await client.call_tool("click", {"x": 200, "y": 150, "double": True})
     assert res_dbl.data["ok"] is True
     assert res_dbl.data["double"] is True
+
+
+async def test_element_click_without_action(client, seeded_manager):
+    """use_action=False 走元素自带点击（ele.click），不经过 Actions 链。"""
+    _, _, tab = seeded_manager
+    btn = FakeElement(tag="button", text="保 存")
+    tab.ele_result = btn
+
+    found = await client.call_tool("find_element", {"locator": "text:保 存", "frame": "main"})
+    eid = found.data.element_id
+
+    res = await client.call_tool("element_click", {"element_id": eid, "use_action": False})
+    assert res.data["ok"] is True
+    assert res.data["by_action"] is False
+    assert ("click", False) in btn.actions  # 元素自带点击被调用
+    assert not any(c[0] == "click" for c in tab.actions.calls)  # 未走 Actions 真实鼠标链

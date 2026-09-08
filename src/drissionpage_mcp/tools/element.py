@@ -226,7 +226,7 @@ def click(
         timeout: 等待元素可见的超时秒数
         observe: 是否观察点击后弹出的新浮层（Modal/Toast 等）
     """
-    tab, _ = manager.get_tab(tab_id)
+    tab, session = manager.get_tab(tab_id)
 
     # 1. 绝对物理坐标点击模式
     pt_x = None
@@ -287,7 +287,7 @@ def click(
         ele = prefer_visible(raw_res) if isinstance(raw_res, list) else raw_res
         if not ele:
             raise ToolError(f"未找到目标元素: {target!r}")
-        element_id = manager.register_element(ele, container, tab_id)
+        element_id = manager.register_element(ele, tab, session.browser_id, container)
     if observe and container is not None:
         arm_overlays(container)
 
@@ -354,10 +354,40 @@ def element_click(
     Args:
         element_id: find_element 返回的元素 id 或定位符
         by_js: 是否改用 JS 点击（元素被遮挡时可用）
-        use_action: True=用 Actions 真实鼠标点击；False=用元素自带的模拟点击
+        use_action: True=用 Actions 真实鼠标点击；False=用元素自带的模拟点击（ele.click）
         observe: 是否观察点击后的新浮层
     """
-    return click(target=element_id, by_js=by_js, observe=observe)
+    if use_action:
+        return click(target=element_id, by_js=by_js, observe=observe)
+
+    # 元素自带点击路径（非 Actions 链）
+    rec = manager.get_record(element_id)
+    container = None
+    if rec is not None:
+        ele = manager.get_element(element_id)
+        container = rec.container
+    else:
+        tab, session = manager.get_tab(None)
+        found, container = manager.search(tab, element_id)
+        if not found:
+            raise ToolError(f"未找到目标元素: {element_id!r}")
+        ele = found
+        element_id = manager.register_element(ele, tab, session.browser_id, container)
+    if observe and container is not None:
+        arm_overlays(container)
+    ele.click(by_js=by_js)
+    res: dict = {
+        "ok": True,
+        "message": f"已点击元素: {element_id}",
+        "element_id": element_id,
+        "by_action": False,
+    }
+    if observe and container is not None:
+        time.sleep(0.35)
+        overlays = drain_overlays(container)
+        if overlays:
+            res["overlays"] = overlays
+    return res
 
 
 @mcp.tool(

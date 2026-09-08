@@ -183,11 +183,12 @@ async def test_x6_add_node(client, x6_seeded):
 
 
 async def test_x6_delete_node(client, x6_seeded):
-    """测试选中节点并发送 Backspace 删除。"""
+    """测试选中节点并发送 Backspace 删除，响应标注 deleted_via 删除路径。"""
     _, _, tab, _ = x6_seeded
     res = await client.call_tool("x6_delete_node", {"node": "n2"})
     assert res.data["ok"] is True
     assert res.data["deleted_node"]["cellId"] == "n2"
+    assert res.data["deleted_via"] in ("keyboard", "api")
     assert any(c[0] == "key_down" and c[1] == "BACKSPACE" for c in tab.actions.calls)
 
 

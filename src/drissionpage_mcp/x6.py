@@ -489,11 +489,16 @@ def delete_node(session: X6Session, node_id_or_name: str) -> dict:
     actions.key_up("BACKSPACE")
     time.sleep(0.25)
 
-    # 检查是否已成功删除；若未删除（因前端未开启 allowDeleteAndManualConnect 规则属性），执行图模型级清理
+    # 检查是否已成功删除；若未删除（因前端未开启 allowDeleteAndManualConnect 规则属性），
+    # 执行图模型级清理兜底。deleted_via 用于区分删除路径：UI 功能测试断言删除行为时
+    # 应校验 deleted_via == 'keyboard'；'api' 说明真实键盘删除未生效、由模型清理补删，
+    # 可能掩盖前端缺陷。
     cid = node["cellId"]
+    deleted_via = "keyboard"
     try:
         remain = session.frame.eles(f"css:g.x6-node[data-cell-id='{cid}']", timeout=0.1)
         if remain:
+            deleted_via = "api"
             clean_js = r"""
             var cid = arguments[0];
             var container = document.querySelector('.x6-graph');
@@ -519,5 +524,6 @@ def delete_node(session: X6Session, node_id_or_name: str) -> dict:
         pass
     return {
         "ok": True,
+        "deleted_via": deleted_via,
         "deleted_node": {"cellId": node["cellId"], "text": node["text"]},
     }
