@@ -59,6 +59,62 @@ def _ele_midpoint(ele: Any, fallback_x: float, fallback_y: float) -> tuple[float
             return (float(mid[0]), float(mid[1]))
     return (float(fallback_x), float(fallback_y))
 
+def _find_safe_node_point(
+    session: X6Session, node: dict, node_el: Any = None
+) -> tuple[float, float]:
+    """获取节点本体的安全交互坐标（自动避开几何中心重叠的连线与端口热区）。"""
+    cid = node.get("cellId")
+    if cid and hasattr(session.frame, "run_js"):
+        js = r"""
+        return (function(cid) {
+            var node = document.querySelector("g.x6-node[data-cell-id='" + cid + "']");
+            if (!node) return null;
+            var rect = node.getBoundingClientRect();
+            var candidates = [
+                { x: rect.left + rect.width * 0.25, y: rect.top + rect.height * 0.5 },
+                { x: rect.left + rect.width * 0.75, y: rect.top + rect.height * 0.5 },
+                { x: rect.left + rect.width * 0.5, y: rect.top + rect.height * 0.5 },
+                { x: rect.left + rect.width * 0.3, y: rect.top + rect.height * 0.3 },
+                { x: rect.left + rect.width * 0.7, y: rect.top + rect.height * 0.7 }
+            ];
+            for (var i = 0; i < candidates.length; i++) {
+                var pt = candidates[i];
+                var el = document.elementFromPoint(pt.x, pt.y);
+                if (el) {
+                    var cell = el.closest('[data-cell-id]');
+                    if (cell && cell.getAttribute('data-cell-id') === cid && !el.closest('.x6-port')) {
+                        return { x: pt.x, y: pt.y, valid: true };
+                    }
+                }
+            }
+            return { x: rect.left + rect.width * 0.25, y: rect.top + rect.height * 0.5, valid: false };
+        })(arguments[0]);
+        """
+        try:
+            hit = session.frame.run_js(js, cid)
+            if isinstance(hit, str):
+                try:
+                    hit = json.loads(hit)
+                except Exception:
+                    pass
+            if isinstance(hit, dict) and "x" in hit and "y" in hit:
+                return session.to_viewport(float(hit["x"]), float(hit["y"]))
+        except Exception:
+            pass
+
+    # DOM 元素可用时的降级：取元素左侧 25% 位置（避开中轴端口/连线）
+    if node_el and hasattr(node_el, "rect"):
+        rect = node_el.rect
+        loc = getattr(rect, "viewport_location", None) or getattr(rect, "location", None)
+        size = getattr(rect, "size", None)
+        if loc and size:
+            return (float(loc[0] + size[0] * 0.25), float(loc[1] + size[1] * 0.5))
+
+    mid_x, mid_y = _ele_midpoint(
+        node_el, node["viewport_center"]["x"], node["viewport_center"]["y"]
+    )
+    return (float(mid_x), float(mid_y))
+
 def bind_x6(tab_id: str | None = None) -> X6Session:
     """定位激活模块 iframe -> 绑定 X6 Graph 实例 -> 建立会话。"""
     tab, _ = manager.get_tab(tab_id)
@@ -222,24 +278,62 @@ def move_node(
     dy: int,
     steps: int = 15,
 ) -> dict:
-    """真实鼠标拖拽位移节点（带平滑插值轨迹）。"""
+    """真实鼠标拖拽位移节点（带平滑插值轨迹与视口溢出自动平移保护）。"""
     node = find_node(session, node_id_or_name)
     node_el = session.frame.ele(f"css:g.x6-node[data-cell-id='{node['cellId']}']")
-    start_x, start_y = _ele_midpoint(
-        node_el, node["viewport_center"]["x"], node["viewport_center"]["y"]
-    )
+    start_x, start_y = _find_safe_node_point(session, node, node_el)
     end_x = start_x + dx
     end_y = start_y + dy
+
+    # 视口边界保护：检测位移目标是否超出画布容器可视范围
+    # 若超出（如 dy=-500 导致 y<0 溢出窗口上边界），自动反向平移画布，确保拖拽在可视区内完成
+    c_info = None
+    if hasattr(session.frame, "run_js"):
+        try:
+            raw_c = session.frame.run_js(
+                "var g = window.__x6_graph; return (g && g.container) ? (function(r){ return JSON.stringify({x: r.x, y: r.y, width: r.width, height: r.height}); })(g.container.getBoundingClientRect()) : null;"
+            )
+            c_info = json.loads(raw_c) if isinstance(raw_c, str) else raw_c
+        except Exception:
+            pass
+
+    pan_x = 0
+    pan_y = 0
+    if isinstance(c_info, dict) and "x" in c_info:
+        c_vx, c_vy = session.to_viewport(c_info["x"], c_info["y"])
+        c_vw, c_vh = c_info["width"], c_info["height"]
+        margin = 40
+        min_x, max_x = c_vx + margin, c_vx + c_vw - margin
+        min_y, max_y = c_vy + margin, c_vy + c_vh - margin
+
+        # 检查并计算视口平移补偿量
+        if end_y < min_y:
+            pan_y = int(min_y - end_y + 40)
+        elif end_y > max_y:
+            pan_y = int(max_y - end_y - 40)
+
+        if end_x < min_x:
+            pan_x = int(min_x - end_x + 40)
+        elif end_x > max_x:
+            pan_x = int(max_x - end_x - 40)
+
+    if (pan_x != 0 or pan_y != 0) and hasattr(session.frame, "run_js"):
+        try:
+            session.frame.run_js(f"var g = window.__x6_graph; if (g && g.translateBy) g.translateBy({pan_x}, {pan_y});")
+            time.sleep(0.1)
+            start_x += pan_x
+            start_y += pan_y
+            end_x += pan_x
+            end_y += pan_y
+        except Exception:
+            pass
 
     frame_actions = getattr(session.frame, "actions", None)
     actions = frame_actions if hasattr(frame_actions, "move_to") else session.tab.actions
 
     glide_cursor(session.tab, start_x, start_y, 250)
     time.sleep(0.15)
-    if node_el:
-        actions.move_to(node_el)
-    else:
-        actions.move_to((start_x, start_y))
+    actions.move_to((start_x, start_y))
     actions.wait(0.08)
     act_cursor(session.tab, "down", start_x, start_y)
     actions.hold()
@@ -259,8 +353,8 @@ def move_node(
     return {
         "cellId": node["cellId"],
         "node_text": node["text"],
-        "from": {"x": round(start_x, 1), "y": round(start_y, 1)},
-        "to": {"x": round(end_x, 1), "y": round(end_y, 1)},
+        "from": {"x": round(start_x - pan_x, 1), "y": round(start_y - pan_y, 1)},
+        "to": {"x": round(end_x - pan_x, 1), "y": round(end_y - pan_y, 1)},
         "delta": {"dx": dx, "dy": dy},
     }
 
@@ -368,19 +462,14 @@ def click_node(
     """单击选中或双击打开节点配置。"""
     node = find_node(session, node_id_or_name)
     node_el = session.frame.ele(f"css:g.x6-node[data-cell-id='{node['cellId']}']")
-    pos_x, pos_y = _ele_midpoint(
-        node_el, node["viewport_center"]["x"], node["viewport_center"]["y"]
-    )
+    pos_x, pos_y = _find_safe_node_point(session, node, node_el)
 
     frame_actions = getattr(session.frame, "actions", None)
     actions = frame_actions if hasattr(frame_actions, "move_to") else session.tab.actions
 
     glide_cursor(session.tab, pos_x, pos_y, 200)
     time.sleep(0.1)
-    if node_el:
-        actions.move_to(node_el)
-    else:
-        actions.move_to((pos_x, pos_y))
+    actions.move_to((pos_x, pos_y))
     actions.wait(0.05)
     act_cursor(session.tab, "click", pos_x, pos_y)
     actions.click()

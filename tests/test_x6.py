@@ -153,6 +153,17 @@ async def test_x6_move_node(client, x6_seeded):
     assert any(c[0] == "release" for c in tab.actions.calls)
 
 
+async def test_x6_move_node_viewport_protection(client, x6_seeded):
+    """测试大幅度位移触发视口自动平移保护。"""
+    _, _, tab, _ = x6_seeded
+    res = await client.call_tool("x6_move_node", {"node": "n2", "dx": 0, "dy": -500})
+    assert res.data["cellId"] == "n2"
+    assert res.data["delta"] == {"dx": 0, "dy": -500}
+    assert any(c[0] == "move_to" for c in tab.actions.calls)
+    assert any(c[0] == "hold" for c in tab.actions.calls)
+    assert any(c[0] == "release" for c in tab.actions.calls)
+
+
 async def test_x6_connect_ports(client, x6_seeded):
     """测试出口桩至入口桩拖拽连线。"""
     _, _, tab, _ = x6_seeded
