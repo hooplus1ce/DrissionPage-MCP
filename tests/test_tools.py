@@ -20,7 +20,8 @@ async def test_server_lists_expected_tools(client):
         "tab_list",
         "tab_close",
         "tab_info",
-        "run_js",
+        "enable_dev_tool",
+        "disable_dev_tool",
         "navigate",
         "navigate_back",
         "navigate_forward",
@@ -45,6 +46,7 @@ async def test_server_lists_expected_tools(client):
         "cookies_clear",
     }
     assert expected <= names
+    assert "run_js" not in names
 
 
 async def test_browser_status_returns_seeded_session(client, seeded_manager):
@@ -189,13 +191,43 @@ async def test_tab_lifecycle_and_run_js(client, seeded_manager):
     tabs = await client.call_tool("tab_list", {})
     assert len(tabs.data) == 2
 
+    # 默认 run_js 对外隐藏并禁用
+    with pytest.raises(ToolError, match="Unknown tool"):
+        await client.call_tool("run_js", {"script": "return 1 + 1"})
+
+    # 传入用户明确指示后解锁
+    unlock = await client.call_tool(
+        "enable_dev_tool",
+        {"name": "run_js", "user_explicit_instruction": "执行测试 JS 脚本"},
+    )
+    assert "已临时解锁" in unlock.data
+
     js = await client.call_tool("run_js", {"script": "return 1 + 1"})
     assert js.data == "js-ok"
+
+    # 重新锁定
+    relock = await client.call_tool("disable_dev_tool", {"name": "run_js"})
+    assert "已锁定" in relock.data
+
+    with pytest.raises(ToolError, match="Unknown tool"):
+        await client.call_tool("run_js", {"script": "return 1 + 1"})
 
     await client.call_tool("tab_close", {"tab_id": created.data.tab_id})
     assert ("close", False) in chromium.tabs[created.data.tab_id].steps
 
 
+async def test_enable_dev_tool_validation(client):
+    with pytest.raises(ToolError, match="未受管控"):
+        await client.call_tool(
+            "enable_dev_tool",
+            {"name": "unknown_tool", "user_explicit_instruction": "测试"},
+        )
+
+    with pytest.raises(ToolError, match="必须提供用户明确要求"):
+        await client.call_tool(
+            "enable_dev_tool",
+            {"name": "run_js", "user_explicit_instruction": "   "},
+        )
 async def test_context_and_cookies(client, seeded_manager):
     _, chromium, tab = seeded_manager
     ctx = await client.call_tool("context_new", {})
@@ -264,3 +296,26 @@ async def test_page_info_and_controls_breadcrumb(client, seeded_manager):
     controls = await client.call_tool("page_controls", {})
     assert controls.data["module_path"] == "审批流管理 > 审批单列表"
     assert controls.data["breadcrumb"] == ["审批流管理", "审批单列表"]
+
+
+async def test_unified_click(client, seeded_manager):
+    """测试统一全能 click 工具：支持 element_id、选择器、坐标点位与单双击。"""
+    _, _, tab = seeded_manager
+    btn = FakeElement(tag="button", text="保 存")
+    tab.ele_result = btn
+
+    # 1. 选择器点击
+    res_sel = await client.call_tool("click", {"target": "text:保 存"})
+    assert res_sel.data["ok"] is True
+    assert "clicked" in res_sel.data
+
+    # 2. 坐标点位点击
+    res_pt = await client.call_tool("click", {"point": {"x": 300, "y": 450}, "button": "right"})
+    assert res_pt.data["ok"] is True
+    assert res_pt.data["clicked"]["x"] == 300.0
+    assert res_pt.data["button"] == "right"
+
+    # 3. 双击
+    res_dbl = await client.call_tool("click", {"x": 200, "y": 150, "double": True})
+    assert res_dbl.data["ok"] is True
+    assert res_dbl.data["double"] is True

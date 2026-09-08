@@ -321,20 +321,34 @@ while (queue.length && visited < 400) {
     var name = iconName(node);
     var isText = String(node.type || '').toLowerCase() === 'text' || a.text !== undefined;
     var b = node.globalAABBBounds;
-    if (name && !isText && !structural[name.toLowerCase()] && b) {
+    var isPickable = a.pickable !== false && node.pickable !== false;
+    var isIconBack = name.toLowerCase().indexOf('icon-back') >= 0;
+    if (name && !isText && !structural[name.toLowerCase()] && !isIconBack && isPickable && b) {
       var x1 = Number(b.x1), y1 = Number(b.y1), x2 = Number(b.x2), y2 = Number(b.y2);
       var w = x2 - x1, h = y2 - y1;
       if ([x1, y1, x2, y2, w, h].every(Number.isFinite) && w > 0 && w < 300 && h > 0 && h < 300) {
-        var fname = name.toLowerCase();
         var fn = 'custom';
-        if (fname.indexOf('sort') >= 0) fn = 'sort';
-        else if (fname.indexOf('filter') >= 0) fn = 'filter';
-        else if (fname.indexOf('dropdown') >= 0 || fname.indexOf('downward') >= 0) fn = 'dropdown';
-        else if (fname.indexOf('freeze') >= 0) fn = 'freeze';
-        else if (fname.indexOf('checkbox') >= 0) fn = 'checkbox';
-        else if (fname.indexOf('expand') >= 0) fn = 'expand';
-        else if (fname.indexOf('collapse') >= 0) fn = 'collapse';
-        icons.push({ name: name, function: fn, box: { x: x1, y: y1, width: w, height: h }, center: { x: (x1 + x2) / 2, y: (y1 + y2) / 2 } });
+        var ft = String(a.funcType || node.funcType || '').toLowerCase();
+        if (ft) {
+          if (ft.indexOf('sort') >= 0) fn = 'sort';
+          else if (ft.indexOf('filter') >= 0) fn = 'filter';
+          else if (ft.indexOf('freeze') >= 0 || ft.indexOf('frozen') >= 0) fn = 'freeze';
+          else if (ft.indexOf('dropdown') >= 0 || ft.indexOf('downward') >= 0) fn = 'dropdown';
+          else if (ft.indexOf('checkbox') >= 0) fn = 'checkbox';
+          else if (ft.indexOf('expand') >= 0) fn = 'expand';
+          else if (ft.indexOf('collapse') >= 0) fn = 'collapse';
+        }
+        if (fn === 'custom') {
+          var fname = name.toLowerCase();
+          if (fname.indexOf('sort') >= 0) fn = 'sort';
+          else if (fname.indexOf('filter') >= 0) fn = 'filter';
+          else if (fname.indexOf('dropdown') >= 0 || fname.indexOf('downward') >= 0) fn = 'dropdown';
+          else if (fname.indexOf('freeze') >= 0 || fname.indexOf('frozen') >= 0) fn = 'freeze';
+          else if (fname.indexOf('checkbox') >= 0) fn = 'checkbox';
+          else if (fname.indexOf('expand') >= 0) fn = 'expand';
+          else if (fname.indexOf('collapse') >= 0) fn = 'collapse';
+        }
+        icons.push({ name: name, function: fn, funcType: a.funcType || node.funcType || undefined, box: { x: x1, y: y1, width: w, height: h }, center: { x: (x1 + x2) / 2, y: (y1 + y2) / 2 } });
       }
     }
   }

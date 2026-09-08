@@ -197,6 +197,13 @@ class FakeElement:
     @property
     def midpoint(self):
         return (self._rect_loc[0] + self._rect_size[0] / 2, self._rect_loc[1] + self._rect_size[1] / 2)
+    @property
+    def viewport_location(self):
+        return self.location
+
+    @property
+    def viewport_midpoint(self):
+        return self.midpoint
 
     def click(self, by_js=False, **kwargs):
         self.actions.append(("click", by_js))

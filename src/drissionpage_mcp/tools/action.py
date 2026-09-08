@@ -61,6 +61,14 @@ def _run_step(actions, step: ActionStep) -> None:
         glide_cursor(actions, curr_x, curr_y, duration_ms)
         actions.move(step.offset_x or 0, step.offset_y or 0, duration=duration)
     elif act in ("click", "r_click", "m_click"):
+        if ele is not None:
+            try:
+                pt = getattr(ele.rect, "viewport_midpoint", None) or getattr(ele.rect, "midpoint", None)
+                if pt:
+                    glide_cursor(actions, pt[0], pt[1], 150)
+                    time.sleep(0.05)
+            except Exception:
+                pass
         act_cursor(actions, "click")
         fn = getattr(actions, act)
         if ele is not None:

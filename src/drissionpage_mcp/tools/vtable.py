@@ -190,7 +190,7 @@ def vtable_click_icon(
     col: int,
     row: int,
     name: str | None = None,
-    index: int = 1,
+    index: int | None = None,
     tab_id: str | None = None,
     table_index: int | None = None,
 ) -> dict:
@@ -200,9 +200,10 @@ def vtable_click_icon(
     以真实鼠标点击。
 
     Args:
-        col, row: 图标所在单元格坐标
-        name: 图标名或功能名过滤（如 sort/filter/freeze/checkbox），省略时用 index
-        index: 第几个图标（从 1 起）
+        col, row: 图标所在单元格坐标（row=0 通常为表头）
+        name: 图标名或功能语义过滤（支持中英文，如 'sort'/'排序'、'filter'/'筛选'、'freeze'/'冻结'、'checkbox'/'复选' 等）。
+              当单元格内存在多个图标且未指定 index 时必须显式提供 name，避免误操作
+        index: 第几个图标（从 1 起）；仅在需按序号点击或单元格仅有 1 个图标时可省略
     """
     session = get_session(tab_id, table_index)
     return click_icon(session, col, row, name=name, index=index)

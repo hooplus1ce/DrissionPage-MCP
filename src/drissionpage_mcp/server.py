@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import os
 import argparse
 import asyncio
 from pathlib import Path
@@ -28,6 +29,7 @@ try:
 except Exception:
     pass
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.server.lifespan import lifespan
 
 from .manager import manager
@@ -75,6 +77,7 @@ APS 前端组件框架（实测指纹，定位时优先使用）：
 - 下拉选项是旧版类名 .ant-select-dropdown-menu-item（不是 v4+ 的 .ant-select-item-option）；
   antd_select / antd_get_options 已自动兼容，无需手写类名
 - 日期组件为 .ant-calendar-*（旧版）；antd_date_pick 已自动兼容
+- 多选下拉框规则（黄金法则）：多选下拉框（Select[multiple]）在选完待选值后必须按下 ESC 键让下拉框收回（antd_select 工具已默认开启 close_multi=True 自动收回；若手动操作务必发 press_key('ESCAPE') 收回），严禁让展开的下拉菜单遮挡后续操作按钮！
 - 存在 ant-ant-* 双前缀类名（legions 包装产物），定位时直接用 ant-* 即可
 - VTable 表格内容渲染在 canvas 里，DOM 定位只能到画布容器；vtable 交互触发的
   浮层分三家族：① .vtable__menu-element*（VTable 自带菜单，位于 .vtable 容器内部、
@@ -85,6 +88,11 @@ APS 前端组件框架（实测指纹，定位时优先使用）：
   getBodyVisibleCellRange；vtable 工具族已封装，优先用工具
 - 表单结构规整：.ant-form-item 内 .ant-form-item-label label + 控件，
   可用 '@@tag:label@@text()=字段名' 反查同 form-item 内的控件
+
+开发者工具安全规范：
+- 底层通用脚本工具（如 run_js）默认已禁用并对 AI 隐藏，严禁用于常规 UI 自动化测试（点击、输入、表格操作、拖拽等）！
+- 所有常规交互必须使用已封装的高阶领域工具（vtable_*、antd_*、element_*、action_chain 等）；
+- 仅当用户在指令中明确指示“执行 JS”或需底层调试时，才可通过 enable_dev_tool 解锁 run_js，操作完成后须调用 disable_dev_tool 重新锁定。
 """
 
 
@@ -114,6 +122,7 @@ from .tools import (  # noqa: E402
     navigate,
     snapshot,
     vtable,
+    x6,
 )
 
 for _sub in (
@@ -126,8 +135,62 @@ for _sub in (
     vtable.mcp,
     account.mcp,
     snapshot.mcp,
+    x6.mcp,
 ):
     mcp.mount(_sub)
+
+# ---------- 底层开发者工具管控（默认对 AI 隐藏 run_js，避免模型跑偏） ----------
+
+DEV_TOOLS: set[str] = {"run_js"}
+
+# 默认隐藏底层脚本工具，除非环境变量显式设置 ENABLE_RUN_JS=true
+ENABLE_RUN_JS = os.getenv("ENABLE_RUN_JS", "false").lower() in ("1", "true", "yes")
+
+if not ENABLE_RUN_JS:
+    mcp.disable(names=DEV_TOOLS)
+
+
+@mcp.tool(
+    tags={"system", "security"},
+    annotations={"title": "临时解锁开发者工具", "readOnlyHint": False},
+)
+def enable_dev_tool(name: str, user_explicit_instruction: str) -> str:
+    """仅在用户明确指令要求执行底层脚本或底层调试时，临时解锁被隐藏的开发者工具（如 'run_js'）。
+
+    【安全规范】常规 UI 自动化测试（点击、输入、下拉选择、表格操作、拖拽排序列等）严禁申请解锁此工具！
+    必须优先使用封装好的领域工具（如 vtable_*、antd_*、element_*、action_chain 等）。
+    仅当用户在本轮对话中明确要求“执行 JS 脚本”或需要底层调试且无相应工具覆盖时，方可传入用户指示原文申请解锁。
+
+    Args:
+        name: 要解锁的工具名称（目前支持: 'run_js'）
+        user_explicit_instruction: 用户当前明确要求执行底层脚本的指示原话
+    """
+    clean_name = name.strip()
+    if clean_name not in DEV_TOOLS:
+        raise ToolError(f"未受管控的开发者工具: '{clean_name}'，支持解锁的工具: {sorted(DEV_TOOLS)}")
+    if not user_explicit_instruction or not user_explicit_instruction.strip():
+        raise ToolError("必须提供用户明确要求调用底层工具的指令内容作为授权凭证。")
+
+    mcp.enable(names={clean_name})
+    return f"已临时解锁工具 [{clean_name}]。完成该项操作后必须调用 disable_dev_tool 重新锁定。"
+
+
+@mcp.tool(
+    tags={"system", "security"},
+    annotations={"title": "重新锁定开发者工具", "readOnlyHint": False},
+)
+def disable_dev_tool(name: str = "run_js") -> str:
+    """重新锁定底层开发者工具，将其从可用工具列表中移除，避免污染后续常规 UI 自动化测试。
+
+    Args:
+        name: 要锁定的工具名称，默认为 'run_js'
+    """
+    clean_name = name.strip()
+    if clean_name not in DEV_TOOLS:
+        raise ToolError(f"未受管控的开发者工具: '{clean_name}'，支持管控的工具: {sorted(DEV_TOOLS)}")
+
+    mcp.disable(names={clean_name})
+    return f"已锁定并隐藏工具 [{clean_name}]。"
 
 
 def main() -> None:

@@ -108,7 +108,7 @@ def antd_get_options(element_id: str, tab_id: str | None = None, timeout: float 
     tab, _ = manager.get_tab(tab_id)
     root = _resolve_search_root(tab, None, element_id)
     dropdown, dd_root = _open_dropdown(
-        tab, ele, root, ".ant-select-dropdown:not(.ant-select-dropdown-hidden)", None, timeout
+        tab, ele, root, ".ant-select-dropdown:not(.ant-select-dropdown-hidden)", timeout
     )
     if dropdown is None:
         raise ToolError("下拉浮层未出现，请确认元素是 AntD Select 且可展开")
@@ -136,8 +136,11 @@ def antd_select(
     tab_id: str | None = None,
     timeout: float = 5,
     exact: bool = False,
+    close_multi: bool = True,
 ) -> MessageResult:
     """操作 AntD 下拉选择框（Select）：真实点击展开，在 portal 浮层中点击匹配选项。
+
+    若为多选下拉框（Select[multiple]），选中后自动派发 ESC 键收起浮层，防止遮挡后续按钮或表单。
 
     Args:
         element_id: Select 输入框元素的 element_id（find_element 定位 '.ant-select' 等）
@@ -145,6 +148,7 @@ def antd_select(
         tab_id: 标签页 id，省略时用最新标签页
         timeout: 等待下拉浮层出现的秒数
         exact: 是否精确匹配选项文本
+        close_multi: 多选下拉框选中后是否自动按 ESC 键收起浮层（默认 True，彻底避免遮挡后续操作按钮）
     """
     ele = manager.get_element(element_id)
     tab, _ = manager.get_tab(tab_id)
@@ -178,7 +182,24 @@ def antd_select(
     arm_overlays(root)
     real_click(tab, target, root)
     resp = {"ok": True, "message": f"已选择下拉选项: {option_text!r}"}
-    time.sleep(0.45)
+    time.sleep(0.35)
+
+    # 核心保障：多选下拉框（或选项点击后浮层仍未关闭），自动派发 ESC 键收起浮层，防止遮挡下一步按钮或交互
+    if close_multi:
+        try:
+            ele_cls = ele.attr("class") or ""
+            dd_cls = dropdown.attr("class") or ""
+            is_multi = "multiple" in ele_cls or "multiple" in dd_cls
+            still_open = dropdown.states.is_displayed if hasattr(dropdown, "states") else False
+            if is_multi or still_open:
+                actions = root.actions if hasattr(root, "actions") else tab.actions
+                actions.key_down("ESCAPE")
+                time.sleep(0.05)
+                actions.key_up("ESCAPE")
+                time.sleep(0.15)
+        except Exception:
+            pass
+
     overlays = drain_overlays(root)
     if overlays:
         resp["overlays"] = overlays

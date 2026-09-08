@@ -52,9 +52,8 @@ def is_cursor_enabled() -> bool:
 
     val = os.getenv("SHOW_CURSOR") or os.getenv("DRISSIONPAGE_SHOW_CURSOR")
     if val is None:
-        return False
-    return val.strip().lower() in {"1", "true", "yes", "on", "enable", "enabled"}
-
+        return True  # 默认开启可视化光标，确保用户能够清晰观察自动化操作轨迹
+    return val.strip().lower() not in {"0", "false", "no", "off", "disable", "disabled"}
 
 def set_cursor_enabled(enabled: bool | None) -> None:
     """动态覆盖光标启用状态（传 None 恢复读取环境变量）。"""
@@ -142,7 +141,7 @@ _CURSOR_HELPER_JS_TEMPLATE = r"""
 
   // 60 FPS 平滑滑行接口 (Promise 驱动，采用 Cubic Ease-Out 缓动)
   var activeGlideId = 0;
-  window.__dp_cursor_glide = function (targetX, targetY, durationMs) {
+  window.__dp_cursor_glide = function (targetX, targetY, durationMs, easeType) {
     return new Promise(function (resolve) {
       var glideId = ++activeGlideId;
       show(3000);
@@ -173,7 +172,7 @@ _CURSOR_HELPER_JS_TEMPLATE = r"""
         }
         var elapsed = now - startTime;
         var progress = Math.min(elapsed / duration, 1);
-        var ease = 1 - Math.pow(1 - progress, 3); // 三次减速缓动，手感自然
+        var ease = (easeType === 'linear') ? progress : (1 - Math.pow(1 - progress, 3)); // linear用于拖拽1:1同步，cubic用于自由移动
         renderPos(startX + dx * ease, startY + dy * ease);
 
         if (progress < 1) {
@@ -252,8 +251,10 @@ def ensure_cursor_installed(target: Any) -> bool:
         return False
 
 
-def glide_cursor(target: Any, target_x: float, target_y: float, duration_ms: int = 200) -> None:
-    """以 60 FPS 平滑滑行至视口绝对坐标。"""
+def glide_cursor(
+    target: Any, target_x: float, target_y: float, duration_ms: int = 200, ease: str = "cubic"
+) -> None:
+    """以 60 FPS 平滑滑行至视口绝对坐标。支持 cubic（常规移动）与 linear（拖拽同步）。"""
     if not is_cursor_enabled():
         return
     tab = _resolve_top_tab(target)
@@ -262,10 +263,11 @@ def glide_cursor(target: Any, target_x: float, target_y: float, duration_ms: int
     try:
         ensure_cursor_installed(tab)
         tab.run_js(
-            "if (window.__dp_cursor_glide) window.__dp_cursor_glide(arguments[0], arguments[1], arguments[2]);",
+            "if (window.__dp_cursor_glide) window.__dp_cursor_glide(arguments[0], arguments[1], arguments[2], arguments[3]);",
             target_x,
             target_y,
             duration_ms,
+            ease,
         )
     except Exception:
         pass

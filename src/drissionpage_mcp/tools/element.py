@@ -10,7 +10,8 @@ import time
 
 from fastmcp.exceptions import ToolError
 
-from ..manager import manager, normalize_locator, prefer_visible, prepare_locator, real_click
+from ..cursor import act_cursor, glide_cursor
+from ..manager import manager, normalize_locator, prefer_visible, prepare_locator, real_click, _rect_center_in_page
 from ..overlays import arm_overlays, drain_overlays
 from ..models import ElementDetail, ElementListResult, ElementSummary, MessageResult
 from fastmcp import FastMCP
@@ -191,6 +192,154 @@ def element_info(element_id: str) -> ElementDetail:
 
 
 @mcp.tool(
+    tags={"element", "action", "interaction"},
+    annotations={"title": "通用点击(全能交互)", "readOnlyHint": False},
+)
+def click(
+    target: str | None = None,
+    point: dict[str, float] | None = None,
+    x: float | None = None,
+    y: float | None = None,
+    frame: str | None = None,
+    tab_id: str | None = None,
+    double: bool = False,
+    button: str = "left",
+    by_js: bool = False,
+    timeout: float = 5,
+    observe: bool = True,
+) -> dict:
+    """通用全能点击工具：支持 element_id、选择器（CSS/XPath/文本/AX）、或视口绝对物理坐标。
+
+    不论点击哪里，底层统一驱动 Windows 11 Dark HD 虚拟光标 60FPS 平滑滑行至目标点，
+    并伴随按下与水波纹涟漪动效，支持单双击、右键与新浮层（Modal/Toast）自动感知。
+
+    Args:
+        target: 目标元素标识（支持 element_id、CSS 如 '.ant-btn'、XPath 如 '//button'、文本如 'text:保 存'、'保 存'）
+        point: 目标视口绝对物理坐标（如 {'x': 500, 'y': 300}），用于 Canvas 表格或无 DOM 点位点击
+        x: 目标 X 视口坐标（与 y 搭配使用，可替代 point）
+        y: 目标 Y 视口坐标（与 x 搭配使用，可替代 point）
+        frame: 目标所在 frame（'active'=当前激活模块 iframe；None=激活 iframe 优先，主文档兜底）
+        tab_id: 标签页 id，省略时用最新标签页
+        double: 是否双击（True 会连续两次点击并触发标准 dblclick 事件）
+        button: 鼠标按键（'left' | 'right' | 'middle'）
+        by_js: 是否改用 JS 点击（元素被遮挡时可用，虚拟光标仍会正常滑行至目标中心）
+        timeout: 等待元素可见的超时秒数
+        observe: 是否观察点击后弹出的新浮层（Modal/Toast 等）
+    """
+    tab, _ = manager.get_tab(tab_id)
+
+    # 1. 绝对物理坐标点击模式
+    pt_x = None
+    pt_y = None
+    if point and "x" in point and "y" in point:
+        pt_x = float(point["x"])
+        pt_y = float(point["y"])
+    elif x is not None and y is not None:
+        pt_x = float(x)
+        pt_y = float(y)
+
+    if pt_x is not None and pt_y is not None:
+        glide_cursor(tab, pt_x, pt_y, 180)
+        time.sleep(0.08)
+        act_cursor(tab, "click", pt_x, pt_y)
+        actions = tab.actions
+        actions.move_to((pt_x, pt_y))
+        if button == "right":
+            actions.r_click()
+        elif button == "middle":
+            actions.m_click()
+        elif double:
+            actions.click(times=2)
+        else:
+            actions.click()
+        time.sleep(0.2)
+        res = {
+            "ok": True,
+            "clicked": {"x": round(pt_x, 1), "y": round(pt_y, 1)},
+            "button": button,
+            "double": double,
+        }
+        try:
+            active_frame = manager.resolve_frame(tab, frame or "active")
+            overlays = drain_overlays(active_frame)
+            if overlays:
+                res["overlays"] = overlays
+        except Exception:
+            pass
+        return res
+
+    # 2. 目标元素点击模式
+    if not target:
+        raise ToolError("必须提供 target（element_id/选择器/文本）或 point/x,y 坐标")
+    ele = None
+    container = None
+    element_id = None
+
+    rec = manager.get_record(target)
+    if rec is not None:
+        # 明确为已登记的 element_id，执行严格存活校验（若失效抛出已失效 ToolError）
+        ele = _require_ele(target)
+        container = rec.container or tab
+        element_id = target
+    else:
+        # 非 element_id，按选择器/文本检索
+        raw_res, container = manager.search(tab, target, timeout=timeout, frame=frame)
+        ele = prefer_visible(raw_res) if isinstance(raw_res, list) else raw_res
+        if not ele:
+            raise ToolError(f"未找到目标元素: {target!r}")
+        element_id = manager.register_element(ele, container, tab_id)
+    if observe and container is not None:
+        arm_overlays(container)
+
+    pt = None
+    if hasattr(ele, "rect"):
+        try:
+            pt = getattr(ele.rect, "viewport_midpoint", None) or getattr(ele.rect, "midpoint", None)
+        except Exception:
+            pass
+    if pt is None:
+        pt = _rect_center_in_page(tab, ele, container)
+
+    if pt is not None:
+        glide_cursor(tab, pt[0], pt[1], 180)
+        time.sleep(0.08)
+        act_cursor(tab, "click", pt[0], pt[1])
+
+    if by_js:
+        ele.click(by_js=True)
+    elif button == "right":
+        tab.actions.r_click(ele)
+    elif button == "middle":
+        tab.actions.m_click(ele)
+    elif double:
+        tab.actions.click(ele, times=2)
+        try:
+            ele.run_js("this.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));")
+        except Exception:
+            pass
+    else:
+        real_click(tab, ele, container)
+
+    res = {
+        "ok": True,
+        "message": f"已点击目标: {target}",
+        "element_id": element_id,
+        "double": double,
+        "button": button,
+    }
+    if pt is not None:
+        res["clicked"] = {"x": round(pt[0], 1), "y": round(pt[1], 1)}
+
+    if observe and container is not None:
+        time.sleep(0.35)
+        overlays = drain_overlays(container)
+        if overlays:
+            res["overlays"] = overlays
+
+    return res
+
+
+@mcp.tool(
     tags={"element", "action"},
     annotations={"title": "点击元素", "readOnlyHint": False},
 )
@@ -200,36 +349,15 @@ def element_click(
     use_action: bool = True,
     observe: bool = True,
 ) -> dict:
-    """点击元素。默认通过 Actions 派发真实鼠标事件（移动→按下→抬起），
-    保证 hover/焦点/事件链真实触发，适合 UI 自动化测试。
-
-    响应在有新浮层时附带 overlays（弹窗/提示等，封顶 4 条），无则省略。
+    """点击元素。默认通过 Actions 派发真实鼠标事件，并驱动虚拟光标滑行。
 
     Args:
-        element_id: find_element 返回的元素 id
-        by_js: 是否改用 JS 点击（元素被遮挡时可用，会绕过真实事件链）
+        element_id: find_element 返回的元素 id 或定位符
+        by_js: 是否改用 JS 点击（元素被遮挡时可用）
         use_action: True=用 Actions 真实鼠标点击；False=用元素自带的模拟点击
         observe: 是否观察点击后的新浮层
     """
-    ele = _require_ele(element_id)
-    record = manager.get_record(element_id)
-    container = (record.container if record else None) or None
-    if observe and container is not None:
-        arm_overlays(container)
-    if by_js:
-        ele.click(by_js=True)
-    elif use_action:
-        tab, _ = manager.get_tab(record.tab_id if record else None)
-        real_click(tab, ele, record.container if record else None)
-    else:
-        ele.click()
-    resp = {"ok": True, "message": f"已点击元素 {element_id}"}
-    if observe and container is not None:
-        time.sleep(0.45)
-        overlays = drain_overlays(container)
-        if overlays:
-            resp["overlays"] = overlays
-    return resp
+    return click(target=element_id, by_js=by_js, observe=observe)
 
 
 @mcp.tool(

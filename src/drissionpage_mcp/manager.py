@@ -641,6 +641,21 @@ def real_click(tab, ele, container=None, retries: int = 2) -> None:
     import time as _time
 
     from DrissionPage.errors import NoRectError
+    from .cursor import act_cursor, glide_cursor
+
+    # 尝试获取目标元素在顶层视口绝对坐标并驱动虚拟光标滑行
+    try:
+        pt = None
+        if ele and hasattr(ele, "rect"):
+            pt = getattr(ele.rect, "viewport_midpoint", None) or getattr(ele.rect, "midpoint", None)
+        if pt is None:
+            pt = _rect_center_in_page(tab, ele, container)
+        if pt is not None:
+            glide_cursor(tab, pt[0], pt[1], 180)
+            _time.sleep(0.08)
+            act_cursor(tab, "click", pt[0], pt[1])
+    except Exception:
+        pass
 
     last_err: Exception | None = None
     for attempt in range(retries + 1):

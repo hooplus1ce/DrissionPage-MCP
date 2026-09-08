@@ -145,11 +145,16 @@ def tab_info(tab_id: str | None = None, browser_id: str | None = None) -> TabInf
 
 
 @mcp.tool(
-    tags={"browser", "tab"},
-    annotations={"title": "执行 JS", "readOnlyHint": False},
+    tags={"browser", "tab", "advanced"},
+    annotations={"title": "执行 JS (默认隐藏)", "readOnlyHint": False},
 )
 def run_js(script: str, tab_id: str | None = None, as_expr: bool = False) -> object:
     """在标签页中执行 JavaScript 并返回结果（可 JSON 序列化的部分）。
+
+    【安全警示】此工具为底层调试逃生通道，默认已对 AI 隐藏并禁用。
+    常规 UI 自动化测试（点击、输入、下拉选择、表格操作、拖拽等）严禁使用此工具！
+    必须优先使用 vtable_*、antd_*、element_*、action_chain 等封装工具。
+    仅在用户明确指示要求执行 JS 时，通过 enable_dev_tool 解锁后调用。
 
     Args:
         script: JS 代码；as_expr=False 时作为函数体执行（可用 return），True 时作为表达式求值

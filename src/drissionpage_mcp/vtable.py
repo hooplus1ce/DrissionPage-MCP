@@ -76,17 +76,27 @@ def _refresh_offsets(session: VTableSession) -> None:
 def bind_vtable(tab_id: str | None, table_index: int | None) -> VTableSession:
     """定位激活 frame → 绑定 VTable 实例 → 建立会话。"""
     tab, _ = manager.get_tab(tab_id)
+    frame = manager.resolve_frame(tab, "active")
     if table_index is not None:
         try:
             tab.run_js("window.__vtable_target_index = arguments[0];", table_index)
         except Exception:
             pass
+        if frame is not tab:
+            try:
+                frame.run_js("window.__vtable_target_index = arguments[0];", table_index)
+            except Exception:
+                pass
     else:
         try:
             tab.run_js("delete window.__vtable_target_index;")
         except Exception:
             pass
-    frame = manager.resolve_frame(tab, "active")
+        if frame is not tab:
+            try:
+                frame.run_js("delete window.__vtable_target_index;")
+            except Exception:
+                pass
     data = _run(frame, "bind")
     if not data.get("bound"):
         # frame 会话抖动：清缓存重建后重试一次
@@ -292,30 +302,79 @@ def click_cell(
     return result
 
 
+ICON_KEYWORDS = {
+    "sort": ["sort", "排序", "升序", "降序", "asc", "desc"],
+    "filter": ["filter", "筛选", "过滤"],
+    "freeze": ["freeze", "frozen", "冻结", "解冻", "固定"],
+    "checkbox": ["checkbox", "check", "复选", "勾选", "选择"],
+    "dropdown": ["dropdown", "downward", "下拉"],
+    "expand": ["expand", "展开", "plus", "+"],
+    "collapse": ["collapse", "折叠", "收起", "minus", "-"],
+}
+
+
+def _match_icon(icon: dict, name: str) -> bool:
+    clean = name.strip().lower()
+    icon_name = str(icon.get("name", "")).strip().lower()
+    icon_fn = str(icon.get("function", "")).strip().lower()
+    icon_ft = str(icon.get("funcType", "")).strip().lower()
+
+    if clean in icon_name or clean == icon_fn or clean == icon_ft:
+        return True
+    if icon_name and icon_name in clean:
+        return True
+
+    for cat, aliases in ICON_KEYWORDS.items():
+        if clean == cat or any(alias in clean for alias in aliases):
+            if icon_fn == cat or icon_ft == cat or any(alias in icon_name for alias in aliases):
+                return True
+    return False
+
+
 def click_icon(
-    session: VTableSession, col: int, row: int, name: str | None = None, index: int = 1
+    session: VTableSession,
+    col: int,
+    row: int,
+    name: str | None = None,
+    index: int | None = None,
 ) -> dict:
     """点击单元格/表头内的交互图标（排序/筛选/复选等），坐标来自 scenegraph。"""
     data = _run(session.frame, "cell_icons", col, row)
     icons = data.get("icons") or []
     if not icons:
         raise ToolError(f"单元格 ({col}, {row}) 内未发现可交互图标")
+
+    avail_summary = [
+        f"#{i+1} {icon.get('name')}" + (f"({icon.get('function')})" if icon.get("function") != "custom" else "")
+        for i, icon in enumerate(icons)
+    ]
+
     target = None
     if name:
         for icon in icons:
-            if name.lower() in str(icon.get("name", "")).lower() or name.lower() == str(
-                icon.get("function", "")
-            ):
+            if _match_icon(icon, name):
                 target = icon
                 break
-    if target is None:
-        try:
-            target = icons[index - 1]
-        except IndexError:
+        if target is None:
             raise ToolError(
-                f"图标序号 {index} 超出范围，共 {len(icons)} 个: "
-                f"{[i.get('name') for i in icons]}"
-            ) from None
+                f"单元格 ({col}, {row}) 内未找到匹配 '{name}' 的图标。"
+                f"当前可用图标列表: {avail_summary}"
+            )
+    elif index is not None:
+        if not (1 <= index <= len(icons)):
+            raise ToolError(
+                f"图标序号 {index} 超出范围，单元格 ({col}, {row}) 共有 {len(icons)} 个图标: {avail_summary}"
+            )
+        target = icons[index - 1]
+    else:
+        if len(icons) == 1:
+            target = icons[0]
+        else:
+            raise ToolError(
+                f"单元格 ({col}, {row}) 包含多个交互图标 ({len(icons)} 个): {avail_summary}。"
+                f"为避免误操作，请显式指定 name 参数（支持中英文，如 'sort'/'排序'、'filter'/'筛选'、'freeze'/'冻结'）"
+                f"或指定 index 序号（1~{len(icons)}）。"
+            )
     x, y = session.to_viewport(target["center"]["x"], target["center"]["y"])
     from .models import ActionStep
     from .tools.action import _run_step

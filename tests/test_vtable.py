@@ -321,6 +321,85 @@ async def test_vtable_click_icon_not_found(client, vtable_seeded):
         await client.call_tool("vtable_click_icon", {"col": 1, "row": 0})
 
 
+async def test_vtable_click_icon_ambiguous_fails(client, vtable_seeded):
+    """多个图标且未指定 name/index 时报错，拒绝静默误点。"""
+    _, _, _, vt_frame = vtable_seeded
+    vt_frame.responses["icons"] = json.dumps(
+        {"found": True, "icons": [
+            {"name": "frozenCurrent", "function": "freeze",
+             "box": {"x": 100, "y": 10, "width": 12, "height": 12},
+             "center": {"x": 106, "y": 16}},
+            {"name": "sort_normal", "function": "sort",
+             "box": {"x": 120, "y": 10, "width": 12, "height": 12},
+             "center": {"x": 126, "y": 16}},
+        ]}
+    )
+    with pytest.raises(ToolError, match="包含多个交互图标"):
+        await client.call_tool("vtable_click_icon", {"col": 1, "row": 0})
+
+
+async def test_vtable_click_icon_name_not_matched_fails(client, vtable_seeded):
+    """指定 name 未匹配时不应回退误点，而应报错提示。"""
+    _, _, _, vt_frame = vtable_seeded
+    vt_frame.responses["icons"] = json.dumps(
+        {"found": True, "icons": [
+            {"name": "frozenCurrent", "function": "freeze",
+             "box": {"x": 100, "y": 10, "width": 12, "height": 12},
+             "center": {"x": 106, "y": 16}},
+        ]}
+    )
+    with pytest.raises(ToolError, match="未找到匹配"):
+        await client.call_tool("vtable_click_icon", {"col": 1, "row": 0, "name": "sort"})
+
+
+async def test_vtable_click_icon_chinese_alias(client, vtable_seeded):
+    """支持中文语义别名（如 '排序' 匹配 sort 图标）。"""
+    _, _, tab, vt_frame = vtable_seeded
+    vt_frame.responses["icons"] = json.dumps(
+        {"found": True, "icons": [
+            {"name": "frozenCurrent", "function": "freeze",
+             "box": {"x": 100, "y": 10, "width": 12, "height": 12},
+             "center": {"x": 106, "y": 16}},
+            {"name": "sort_normal", "function": "sort",
+             "box": {"x": 120, "y": 10, "width": 12, "height": 12},
+             "center": {"x": 126, "y": 16}},
+        ]}
+    )
+    result = await client.call_tool("vtable_click_icon", {"col": 1, "row": 0, "name": "排序"})
+    assert ("move_to", (138.0, 228.0), None, None) in tab.actions.calls
+
+
+async def test_vtable_click_icon_single_no_name(client, vtable_seeded):
+    """单元格仅有 1 个图标时，无需传 name 即可直接点击。"""
+    _, _, tab, vt_frame = vtable_seeded
+    vt_frame.responses["icons"] = json.dumps(
+        {"found": True, "icons": [
+            {"name": "checkbox", "function": "checkbox",
+             "box": {"x": 50, "y": 10, "width": 12, "height": 12},
+             "center": {"x": 56, "y": 16}},
+        ]}
+    )
+    result = await client.call_tool("vtable_click_icon", {"col": 0, "row": 1})
+    # (56, 16) + (12, 212) = (68.0, 228.0)
+    assert ("move_to", (68.0, 228.0), None, None) in tab.actions.calls
+
+
+async def test_vtable_click_icon_by_index(client, vtable_seeded):
+    """显式指定 index 可点击对应序号图标。"""
+    _, _, tab, vt_frame = vtable_seeded
+    vt_frame.responses["icons"] = json.dumps(
+        {"found": True, "icons": [
+            {"name": "frozenCurrent", "function": "freeze",
+             "box": {"x": 100, "y": 10, "width": 12, "height": 12},
+             "center": {"x": 106, "y": 16}},
+            {"name": "sort_normal", "function": "sort",
+             "box": {"x": 120, "y": 10, "width": 12, "height": 12},
+             "center": {"x": 126, "y": 16}},
+        ]}
+    )
+    result = await client.call_tool("vtable_click_icon", {"col": 1, "row": 0, "index": 2})
+    assert ("move_to", (138.0, 228.0), None, None) in tab.actions.calls
+
 # ---------- 场景图深度文本提取 ----------
 
 async def test_vtable_cell_text_scenegraph_first(client, vtable_seeded):
