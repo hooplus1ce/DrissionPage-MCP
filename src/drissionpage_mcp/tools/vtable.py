@@ -11,7 +11,10 @@ from __future__ import annotations
 from fastmcp.exceptions import ToolError
 
 from ..models import MessageResult
-from ..server import mcp
+from fastmcp import FastMCP
+
+# 领域子服务器：由 server.py mount 组合（官方 composition 模式）
+mcp = FastMCP("VTable")
 from ..vtable import (
     MAX_READ_CELLS,
     cell_center,

@@ -11,7 +11,10 @@ import json
 from fastmcp.exceptions import ToolError
 
 from ..manager import manager
-from ..server import mcp
+from fastmcp import FastMCP
+
+# 领域子服务器：由 server.py mount 组合（官方 composition 模式）
+mcp = FastMCP("Snapshot")
 
 PAGE_CONTROLS_JS = r"""
 var __pcap = 1;

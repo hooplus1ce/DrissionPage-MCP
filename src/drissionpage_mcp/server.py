@@ -1,4 +1,15 @@
-"""FastMCP 服务入口。"""
+"""FastMCP 组合根（composition root）。
+
+遵循 FastMCP 官方推荐模式：
+- 各业务领域的工具定义在 tools/ 下的独立子服务器中；
+- 本模块创建主服务器并 mount() 组合（实时链接，工具名保持原样）；
+- lifespan 统一管理浏览器资源的清理。
+
+启动方式（官方推荐）：
+- `fastmcp run`（项目根目录的 fastmcp.json 指向本模块的 mcp 实例）；
+- `python -m drissionpage_mcp`（等价封装）；
+- `python -m drissionpage_mcp --transport http --port 8000`（HTTP 传输）。
+"""
 
 from __future__ import annotations
 
@@ -10,7 +21,7 @@ from fastmcp.server.lifespan import lifespan
 
 from .manager import manager
 
-INSTRUCTIONS = f"""\
+INSTRUCTIONS = """\
 DrissionPage-MCP：基于 DrissionPage 5.0 的浏览器自动化服务，面向 UI 自动化功能测试。
 
 典型流程：
@@ -36,6 +47,14 @@ iframe 功能模块（如 APS 等管理系统）：
   scroll/type 输入/key_down+key_up 按键，全部为 CDP Input 事件级别
 - press_key 用于 ENTER/ESC 等单键；element_input 输入文本
 
+定位符语法（DrissionPage 5.0）：
+- '#id' / '.class' / 'tag:div' / '@attr=value' —— 常用简写
+- 'css:selector' / 'xpath://div' / 'text:文字' —— 显式指定方式
+- 'ax:@name=搜索@role=button' —— 无障碍树定位（5.0 新增，可触达 CSS 难定位的菜单/弹层）
+- 不带前缀时自动匹配：先尝试 xpath/css，再按文本模糊匹配
+- 多条件用 @@ 连接，如 '@@tag:div@@text()=确定'
+- 注意：按钮文本可能含全角空格（如 '新 增'、'确 定'），文本匹配时用部分文字或 text: 前缀模糊匹配
+
 APS 前端组件框架（实测指纹，定位时优先使用）：
 - 组件库为 legions-pro-*（封装 AntD v3 时代组件）：legions-pro-select（下拉）、
   legions-pro-modal（可拖拽弹窗）、legions-pro-form（表单）、
@@ -54,14 +73,6 @@ APS 前端组件框架（实测指纹，定位时优先使用）：
   getBodyVisibleCellRange；vtable 工具族已封装，优先用工具
 - 表单结构规整：.ant-form-item 内 .ant-form-item-label label + 控件，
   可用 '@@tag:label@@text()=字段名' 反查同 form-item 内的控件
-
-定位符语法（DrissionPage 5.0）：
-- '#id' / '.class' / 'tag:div' / '@attr=value' —— 常用简写
-- 'css:selector' / 'xpath://div' / 'text:文字' —— 显式指定方式
-- 'ax:@name=搜索@role=button' —— 无障碍树定位（5.0 新增，可触达 CSS 难定位的菜单/弹层）
-- 不带前缀时自动匹配：先尝试 xpath/css，再按文本模糊匹配
-- 多条件用 @@ 连接，如 '@@tag:div@@text()=确定'
-- 注意：按钮文本可能含全角空格（如 '新 增'、'确 定'），文本匹配时用部分文字或 text: 前缀模糊匹配
 """
 
 
@@ -74,14 +85,37 @@ async def app_lifespan(server: FastMCP):
         await asyncio.to_thread(manager.shutdown)
 
 
+# 主服务器：组合各领域子服务器（无命名空间，工具名保持原样）
 mcp: FastMCP = FastMCP(
     "DrissionPage-MCP",
     instructions=INSTRUCTIONS,
     lifespan=app_lifespan,
 )
 
-# mcp 实例就绪后再导入工具模块（导入即注册），避免循环导入
-from . import tools  # noqa: E402, F401
+from .tools import (  # noqa: E402
+    account,
+    action,
+    antd,
+    browser,
+    element,
+    frame,
+    navigate,
+    snapshot,
+    vtable,
+)
+
+for _sub in (
+    browser.mcp,
+    navigate.mcp,
+    element.mcp,
+    frame.mcp,
+    action.mcp,
+    antd.mcp,
+    vtable.mcp,
+    account.mcp,
+    snapshot.mcp,
+):
+    mcp.mount(_sub)
 
 
 def main() -> None:

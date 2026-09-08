@@ -19,11 +19,35 @@
 uv sync
 ```
 
+## 项目结构（FastMCP 官方组合模式）
+
+```
+DrissionPage-MCP/
+├── fastmcp.json             # 官方声明式项目配置（fastmcp run 自动读取）
+├── server.py                # 文件型入口：fastmcp run / inspect 指向的 mcp 实例
+├── src/drissionpage_mcp/
+│   ├── server.py            # 组合根：主服务器 + mount 各领域子服务器 + lifespan
+│   ├── tools/               # 按领域拆分的子服务器（官方 composition 模式）
+│   │   ├── browser.py    navigate.py    element.py    frame.py
+│   │   ├── action.py     antd.py        vtable.py     account.py
+│   │   └── snapshot.py
+│   ├── manager.py           # 浏览器会话/上下文/元素注册表
+│   ├── vtable.py            # VTable 坐标换算层
+│   ├── vtable_scripts.py    # VTable JS 片段库
+│   ├── overlays.py          # 浮层观察器（arm/drain）
+│   └── models.py            # 输出模型
+└── tests/                   # 76 个单测（FastMCP 内存客户端）
+```
+
 ## 运行
 
 ```bash
-uv run drissionpage-mcp                     # stdio（本地客户端直连）
-uv run drissionpage-mcp --transport http --port 8000   # Streamable HTTP，端点 /mcp
+fastmcp run                              # 推荐：读取 fastmcp.json（stdio）
+fastmcp run --transport http --port 8000 # Streamable HTTP，端点 /mcp
+fastmcp inspect server.py                # 查看服务器工具清单
+
+uv run drissionpage-mcp                  # 等价：脚本入口（stdio）
+uv run python -m drissionpage_mcp --transport http --port 8000
 ```
 
 ### 客户端配置示例（Claude Desktop / 通用 stdio）
@@ -39,7 +63,7 @@ uv run drissionpage-mcp --transport http --port 8000   # Streamable HTTP，端�
 }
 ```
 
-## 工具一览（55 个）
+## 工具一览（56 个）
 
 | 分组 | 工具 |
 |---|---|

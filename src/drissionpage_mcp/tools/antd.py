@@ -15,7 +15,10 @@ from fastmcp.exceptions import ToolError
 from ..manager import has_box, manager, normalize_locator, real_click
 from ..models import MessageResult, ToastResult
 from ..overlays import arm_overlays, drain_overlays
-from ..server import mcp
+from fastmcp import FastMCP
+
+# 领域子服务器：由 server.py mount 组合（官方 composition 模式）
+mcp = FastMCP("AntD Portal")
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
