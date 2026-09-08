@@ -237,3 +237,30 @@ async def test_no_session_error_message(client):
             await client.call_tool("navigate", {"url": "https://example.com"})
     finally:
         global_manager._sessions = backup
+
+
+async def test_page_info_and_controls_breadcrumb(client, seeded_manager):
+    """测试 get_page_info 与 page_controls 提取权威面包屑路径。"""
+    import json
+    _, _, tab = seeded_manager
+
+    orig_run_js = tab.run_js
+
+    def mock_run_js(script, *args, **kwargs):
+        if "ant-breadcrumb" in script:
+            return ["审批流管理", "审批单列表"]
+        if "__pcap" in script:
+            return json.dumps({"counts": {"button": 1}, "controls": [{"kind": "button", "text": "查询"}]})
+        return orig_run_js(script, *args, **kwargs)
+
+    tab.run_js = mock_run_js
+    for f in tab.iframes:
+        f.run_js = mock_run_js
+
+    info = await client.call_tool("get_page_info", {})
+    assert info.data.breadcrumb == "审批流管理 > 审批单列表"
+    assert info.data.breadcrumb_items == ["审批流管理", "审批单列表"]
+
+    controls = await client.call_tool("page_controls", {})
+    assert controls.data["module_path"] == "审批流管理 > 审批单列表"
+    assert controls.data["breadcrumb"] == ["审批流管理", "审批单列表"]

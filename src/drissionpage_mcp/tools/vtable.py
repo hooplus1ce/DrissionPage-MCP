@@ -26,6 +26,7 @@ from ..vtable import (
     get_selection,
     get_session,
     hover_cell,
+    inspect_vtable,
     _run,
 )
 
@@ -386,3 +387,55 @@ def vtable_edit_cell(
     if not data.get("ok"):
         raise ToolError(f"编辑失败: {data.get('reason')}（该列可能未配置编辑器）")
     return MessageResult(ok=True, message=f"已写入单元格 ({col}, {row}): {value!r}")
+
+
+@mcp.tool(
+    tags={"vtable"},
+    annotations={"title": "VTable 可视化多粒度快照与交互锚点", "readOnlyHint": True},
+)
+def vtable_inspect(
+    col: int | str | None = None,
+    row: int | None = None,
+    col_range: list[int] | None = None,
+    row_range: list[int] | None = None,
+    tab_id: str | None = None,
+    table_index: int | None = None,
+) -> dict:
+    """VTable 可视化多粒度快照与交互锚点感知。
+
+    在 MCP 服务端一次性完成肉眼真实文本提取、视觉样式解析（前景色/背景色/可交互性）、
+    列分界线与安全空白拖拽点计算，并自动换算为页面视口绝对坐标，为 action_chain 派发
+    鼠标真实操作提供端到端数据支持。
+
+    支持 5 种自适应调用颗粒度：
+    1. 单单元格模式 (传入 col 与 row)：
+       返回指定单元格肉眼可见文本、前景色、背景色、是否可交互（链接/编辑/指针）、
+       视口绝对外接矩形 bounds、中心点 center、安全空白拖拽点 blank_point 与内部图标列表。
+    2. 单列感知模式 (传入 col 或列名，row 为空)：
+       返回列配置（col、field、title、width）、表头换序拖拽中心点 header_center、
+       表头调列宽右边界线点 border_right、表头图标列表 header_icons 及视口内可见单元格列表。
+       col 参数支持传入列字段名或中文表头标题（智能匹配，不区分大小写）。
+    3. 单行感知模式 (传入 row，col 为空)：
+       返回行背景色 bg_color（用于断言选中态或警示色）、行高 height 及该行所有列单元格紧凑数据。
+    4. 区域切片模式 (传入 col_range=[c0, c1] 或 row_range=[r0, r1])：
+       返回指定区域单元格矩阵，并显式计算出框选起始锚点 drag_start（左上格 blank_point）
+       与结束锚点 drag_end（右下格 blank_point），可直接传给 action_chain 派发 hold+move+release。
+    5. 全表可视快照模式 (全部参数为空)：
+       返回轻量级可视全表骨架（列头清单 + 视口内行矩阵），体积控制在 3~5KB，彻底剔除 SVG 噪音。
+
+    Args:
+        col: 列序号或列名（支持 field 字段名或 title 中文表头，如 "申请单号"）
+        row: 行序号（含表头，从 0 起）
+        col_range: 列范围 [起始列, 结束列]
+        row_range: 行范围 [起始行, 结束行]
+        tab_id: 标签页 id，省略时用最新标签页
+        table_index: 多表页面中第几个 .vtable 容器（从 0 起）
+    """
+    session = get_session(tab_id, table_index)
+    return inspect_vtable(
+        session,
+        col=col,
+        row=row,
+        col_range=col_range,
+        row_range=row_range,
+    )

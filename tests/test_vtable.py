@@ -23,6 +23,7 @@ class FakeVTableFrame(FakeFrame):
 
     def run_js(self, script, *args, **kwargs):
         markers = [
+            ("inspect_vtable", "inspect"),
             ("getSelectedCellInfos", "selection"),
             ("__pcap", "page_controls"),
             ("__ovlBuf = []", "drain"),
@@ -455,3 +456,223 @@ async def test_page_controls_fallback_to_main(client, vtable_seeded):
     result = await client.call_tool("page_controls", {})
     # FakeTab.run_js 返回 'js-ok'，解析失败 → 空数据兜底
     assert "controls" in result.data
+
+
+# ---------- vtable_inspect 多粒度感知测试 ----------
+
+async def test_vtable_inspect_cell(client, vtable_seeded):
+    """单单元格感知：返回文本、颜色、交互态及视口绝对几何锚点。"""
+    _, _, tab, vt_frame = vtable_seeded
+    vt_frame.responses["inspect"] = {
+        "bound": True,
+        "scope": "cell",
+        "col": 2,
+        "row": 5,
+        "text": "IOR20260908001",
+        "bg_color": "#ffffff",
+        "text_color": "#1890ff",
+        "interactive": True,
+        "bounds": {"x": 100, "y": 50, "width": 120, "height": 30},
+        "center": {"x": 160, "y": 65},
+        "blank_point": {"x": 212, "y": 65},
+        "icons": [
+            {
+                "name": "copy-icon",
+                "function": "custom",
+                "box": {"x": 105, "y": 55, "width": 16, "height": 16},
+                "center": {"x": 113, "y": 63},
+            }
+        ],
+    }
+    result = await client.call_tool("vtable_inspect", {"col": 2, "row": 5})
+    data = result.data
+    assert data["scope"] == "cell"
+    assert data["text"] == "IOR20260908001"
+    assert data["text_color"] == "#1890ff"
+    assert data["bg_color"] == "#ffffff"
+    assert data["interactive"] is True
+    # 验证视口坐标换算：canvas_offset=(12, 212), frame_offset=(0,0)
+    assert data["center"] == {"x": 172.0, "y": 277.0}
+    assert data["blank_point"] == {"x": 224.0, "y": 277.0}
+    assert data["bounds"]["viewport_x"] == 112.0
+    assert data["bounds"]["viewport_y"] == 262.0
+    assert data["icons"][0]["center"] == {"x": 125.0, "y": 275.0}
+    assert data["icons"][0]["box"]["viewport_x"] == 117.0
+
+
+async def test_vtable_inspect_column_by_title(client, vtable_seeded):
+    """根据中文列名智能解析列序号，返回列宽、border_right 及 header_icons。"""
+    _, _, tab, vt_frame = vtable_seeded
+    vt_frame.responses["headers"] = {
+        "columns": [
+            {"col": 0, "field": "check", "title": "勾选", "type": "checkbox"},
+            {"col": 1, "field": "order_no", "title": "申请单号", "type": "link"},
+            {"col": 2, "field": "status", "title": "状态", "type": "text"},
+        ],
+        "colCount": 3,
+        "headerRows": 1,
+    }
+    vt_frame.responses["inspect"] = lambda *args: {
+        "bound": True,
+        "scope": "column",
+        "col": args[0],  # 应该是被解析出来的列索引 1
+        "field": "order_no",
+        "title": "申请单号",
+        "width": 180,
+        "header_center": {"x": 200, "y": 20},
+        "border_right": {"x": 290, "y": 20},
+        "header_icons": [
+            {
+                "name": "downward",
+                "function": "dropdown",
+                "box": {"x": 270, "y": 12, "width": 16, "height": 16},
+                "center": {"x": 278, "y": 20},
+            }
+        ],
+        "cells": [
+            {
+                "row": 1,
+                "text": "IOR001",
+                "bg_color": None,
+                "text_color": "#1890ff",
+                "interactive": True,
+                "bounds": {"x": 110, "y": 40, "width": 180, "height": 30},
+                "center": {"x": 200, "y": 55},
+                "blank_point": {"x": 282, "y": 55},
+            }
+        ],
+    }
+    result = await client.call_tool("vtable_inspect", {"col": "申请单号"})
+    data = result.data
+    assert data["scope"] == "column"
+    assert data["col"] == 1
+    assert data["width"] == 180
+    assert data["header_center"] == {"x": 212.0, "y": 232.0}
+    assert data["border_right"] == {"x": 302.0, "y": 232.0}
+    assert data["header_icons"][0]["function"] == "dropdown"
+    assert data["header_icons"][0]["center"] == {"x": 290.0, "y": 232.0}
+    assert len(data["cells"]) == 1
+    assert data["cells"][0]["blank_point"] == {"x": 294.0, "y": 267.0}
+
+
+async def test_vtable_inspect_row(client, vtable_seeded):
+    """单行感知：返回整行背景色及全列紧凑数据。"""
+    _, _, tab, vt_frame = vtable_seeded
+    vt_frame.responses["inspect"] = {
+        "bound": True,
+        "scope": "row",
+        "row": 3,
+        "height": 35,
+        "bg_color": "#fff1f0",  # 警告高亮行
+        "cells": [
+            {
+                "col": 0,
+                "field": "id",
+                "title": "ID",
+                "text": "3",
+                "bg_color": "#fff1f0",
+                "text_color": "#333333",
+                "interactive": False,
+                "bounds": {"x": 0, "y": 100, "width": 50, "height": 35},
+                "center": {"x": 25, "y": 117.5},
+                "blank_point": {"x": 42, "y": 117.5},
+                "icons": [],
+            }
+        ],
+    }
+    result = await client.call_tool("vtable_inspect", {"row": 3})
+    data = result.data
+    assert data["scope"] == "row"
+    assert data["row"] == 3
+    assert data["height"] == 35
+    assert data["bg_color"] == "#fff1f0"
+    assert len(data["cells"]) == 1
+    assert data["cells"][0]["center"] == {"x": 37.0, "y": 329.5}
+    assert data["cells"][0]["bounds"]["viewport_x"] == 12.0
+
+
+async def test_vtable_inspect_range(client, vtable_seeded):
+    """区域切片感知：返回指定矩形矩阵并计算出直接供 action_chain 拖选的 drag_start 和 drag_end。"""
+    _, _, tab, vt_frame = vtable_seeded
+    vt_frame.responses["inspect"] = {
+        "bound": True,
+        "scope": "range",
+        "col_range": [1, 2],
+        "row_range": [1, 3],
+        "drag_start": {"x": 100, "y": 50},
+        "drag_end": {"x": 300, "y": 150},
+        "cells": [
+            [
+                {
+                    "col": 1,
+                    "row": 1,
+                    "text": "A1",
+                    "bounds": {"x": 50, "y": 30, "width": 60, "height": 30},
+                    "center": {"x": 80, "y": 45},
+                    "blank_point": {"x": 100, "y": 45},
+                },
+                {
+                    "col": 2,
+                    "row": 1,
+                    "text": "B1",
+                    "bounds": {"x": 110, "y": 30, "width": 60, "height": 30},
+                    "center": {"x": 140, "y": 45},
+                    "blank_point": {"x": 160, "y": 45},
+                },
+            ]
+        ],
+    }
+    result = await client.call_tool(
+        "vtable_inspect", {"col_range": [1, 2], "row_range": [1, 3]}
+    )
+    data = result.data
+    assert data["scope"] == "range"
+    assert data["drag_start"] == {"x": 112.0, "y": 262.0}
+    assert data["drag_end"] == {"x": 312.0, "y": 362.0}
+    assert data["cells"][0][0]["center"] == {"x": 92.0, "y": 257.0}
+
+
+async def test_vtable_inspect_visible_all(client, vtable_seeded):
+    """全屏快照：返回紧凑版可视全表骨架，体积小且无 SVG 冗余。"""
+    _, _, tab, vt_frame = vtable_seeded
+    vt_frame.responses["inspect"] = {
+        "bound": True,
+        "scope": "visible_all",
+        "visible_range": {"colStart": 0, "colEnd": 2, "rowStart": 1, "rowEnd": 2},
+        "colCount": 3,
+        "rowCount": 10,
+        "headers": [
+            {"col": 0, "field": "f0", "title": "C0", "width": 60},
+            {"col": 1, "field": "f1", "title": "C1", "width": 100},
+        ],
+        "rows": [
+            {
+                "row": 1,
+                "cells": [
+                    {"col": 0, "text": "R1C0", "bg_color": None, "text_color": "#333", "interactive": False},
+                    {"col": 1, "text": "R1C1", "bg_color": None, "text_color": "#333", "interactive": True},
+                ],
+            }
+        ],
+    }
+    result = await client.call_tool("vtable_inspect", {})
+    data = result.data
+    assert data["scope"] == "visible_all"
+    assert len(data["headers"]) == 2
+    assert len(data["rows"]) == 1
+    assert data["rows"][0]["cells"][1]["text"] == "R1C1"
+
+
+async def test_vtable_inspect_invalid_column(client, vtable_seeded):
+    """传入非法列名时抛出明确包含可用候选列提示的 ToolError。"""
+    _, _, tab, vt_frame = vtable_seeded
+    vt_frame.responses["headers"] = {
+        "columns": [
+            {"col": 0, "field": "order_id", "title": "订单号"},
+            {"col": 1, "field": "product_name", "title": "物料名称"},
+        ],
+        "colCount": 2,
+        "headerRows": 1,
+    }
+    with pytest.raises(ToolError, match="未找到匹配的列 '不存在的列'。可用列清单: 订单号\\(col=0\\), 物料名称\\(col=1\\)"):
+        await client.call_tool("vtable_inspect", {"col": "不存在的列"})

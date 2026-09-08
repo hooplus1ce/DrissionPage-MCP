@@ -117,16 +117,65 @@ def wait_element(
     annotations={"title": "页面信息", "readOnlyHint": True},
 )
 def get_page_info(tab_id: str | None = None) -> PageInfo:
-    """获取标签页当前网址、标题、加载状态与 User-Agent。"""
+    """获取标签页当前网址、标题、加载状态、面包屑导航（权威模块路径）与 User-Agent。
+
+    模块路径规范：以返回的 breadcrumb（解析自主框架 .ant-breadcrumb）为准，
+    严禁根据 URL / iframe src 猜测模块路径。
+    """
     tab, _ = manager.get_tab(tab_id)
+    breadcrumb_text = None
+    breadcrumb_items: list[str] = []
+    try:
+        bc_data = tab.run_js(
+            r"""
+            var container = document.querySelector('.ant-breadcrumb, [class*="breadcrumb"]');
+            if (!container) return null;
+            var links = container.querySelectorAll('.ant-breadcrumb-link');
+            var items = [];
+            if (links.length > 0) {
+                for (var i = 0; i < links.length; i++) {
+                    var t = links[i].innerText ? links[i].innerText.trim() : '';
+                    if (t) items.push(t);
+                }
+            } else {
+                var spans = container.querySelectorAll('span');
+                for (var j = 0; j < spans.length; j++) {
+                    var st = spans[j].innerText ? spans[j].innerText.trim() : '';
+                    if (st && st !== '>' && st !== '/') items.push(st);
+                }
+            }
+            return items.length > 0 ? items : null;
+            """
+        )
+        if isinstance(bc_data, list):
+            breadcrumb_items = [str(x) for x in bc_data if str(x).strip()]
+            if breadcrumb_items:
+                breadcrumb_text = " > ".join(breadcrumb_items)
+    except Exception:
+        pass
+
+    active_frame_info = None
+    try:
+        active_f = manager.resolve_frame(tab, "active")
+        if active_f is not tab:
+            active_frame_info = {
+                "iframe_id": active_f.attr("id"),
+                "name": active_f.attr("name"),
+                "src": active_f.attr("src"),
+            }
+    except Exception:
+        pass
+
     return PageInfo(
         tab_id=tab.tab_id,
         url=tab.url,
         title=tab.title,
         ready_state=str(tab.states.ready_state),
         user_agent=tab.user_agent,
+        breadcrumb=breadcrumb_text,
+        breadcrumb_items=breadcrumb_items,
+        active_frame=active_frame_info,
     )
-
 
 @mcp.tool(
     tags={"page"},

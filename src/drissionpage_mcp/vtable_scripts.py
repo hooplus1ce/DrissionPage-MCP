@@ -697,3 +697,474 @@ return JSON.stringify({
 """
 
 VTABLE_SCRIPTS["cell_text_deep"] = CELL_TEXT_DEEP
+
+# ---------------------------------------------------------------------------
+# 可视化多粒度感知与交互锚点计算
+# ---------------------------------------------------------------------------
+VTABLE_INSPECT = r"""
+// inspect_vtable
+var t = window.__vt;
+if (!t || !t.scenegraph) return JSON.stringify({ bound: false });
+
+var num = function (v) { var n = Number(v); return Number.isFinite(n) ? n : null; };
+var target_col = (arguments[0] !== null && arguments[0] !== undefined) ? num(arguments[0]) : null;
+var target_row = (arguments[1] !== null && arguments[1] !== undefined) ? num(arguments[1]) : null;
+var col_range = (Array.isArray(arguments[2]) && arguments[2].length >= 2) ? [num(arguments[2][0]), num(arguments[2][1])] : null;
+var row_range = (Array.isArray(arguments[3]) && arguments[3].length >= 2) ? [num(arguments[3][0]), num(arguments[3][1])] : null;
+
+var structural = { '': 1, 'group': 1, 'cell': 1, 'cell-group': 1, 'content': 1, 'text': 1, 'background': 1, 'border': 1, 'line': 1, 'rect': 1, 'shadow': 1, 'stroke': 1 };
+var childrenOf = function (node) {
+  if (!node) return [];
+  if (Array.isArray(node.children)) return node.children;
+  try { var c = node.getChildren && node.getChildren(); if (Array.isArray(c)) return c; } catch (e) {}
+  var out = [];
+  try { if (typeof node.forEachChildren === 'function') node.forEachChildren(function (ch) { out.push(ch); }); } catch (e2) {}
+  return out;
+};
+var iconName = function (node) {
+  var a = node.attribute || {};
+  var v = node.name || a.name || a.iconName || a.funcType || '';
+  return String(v || '');
+};
+
+var getCellNode = function (c, r) {
+  var cell = null;
+  try { cell = t.scenegraph.getCell(c, r); } catch (e) {}
+  return cell;
+};
+
+var getCellBounds = function (c, r, cell) {
+  var rect = null;
+  try { rect = t.getCellRelativeRect(c, r); } catch (e) {}
+  var left, top, right, bottom;
+  if (rect) {
+    var x1 = rect.left !== undefined ? rect.left : (rect.x1 !== undefined ? rect.x1 : (rect.bounds && rect.bounds.x1));
+    var y1 = rect.top !== undefined ? rect.top : (rect.y1 !== undefined ? rect.y1 : (rect.bounds && rect.bounds.y1));
+    var x2 = rect.right !== undefined ? rect.right : (rect.x2 !== undefined ? rect.x2 : (rect.bounds && rect.bounds.x2));
+    var y2 = rect.bottom !== undefined ? rect.bottom : (rect.y2 !== undefined ? rect.y2 : (rect.bounds && rect.bounds.y2));
+    if (Number.isFinite(Number(x1)) && Number.isFinite(Number(y1)) && Number.isFinite(Number(x2)) && Number.isFinite(Number(y2))) {
+      left = Number(x1); top = Number(y1); right = Number(x2); bottom = Number(y2);
+    }
+  }
+  if (left === undefined && cell && cell.globalAABBBounds) {
+    var b = cell.globalAABBBounds;
+    if (Number.isFinite(Number(b.x1)) && Number.isFinite(Number(b.y1)) && Number.isFinite(Number(b.x2)) && Number.isFinite(Number(b.y2))) {
+      left = Number(b.x1); top = Number(b.y1); right = Number(b.x2); bottom = Number(b.y2);
+    }
+  }
+  if (left === undefined) {
+    return { box: null, center: null, blank_point: null };
+  }
+  var w = right - left;
+  var h = bottom - top;
+  var box = { x: left, y: top, width: w, height: h };
+  var cx = (left + right) / 2;
+  var cy = (top + bottom) / 2;
+  var center = { x: cx, y: cy };
+  var blank_x = w < 20 ? cx : (left + w - 8);
+  var blank_point = { x: blank_x, y: cy };
+  return { box: box, center: center, blank_point: blank_point };
+};
+
+var extractCellText = function (cell, c, r) {
+  var sgTexts = [];
+  if (cell) {
+    var walk = function (node, depth) {
+      if (!node || depth > 10 || sgTexts.length >= 20) return;
+      var a = node.attribute || {};
+      if (a.text !== undefined && a.text !== null) {
+        var raw = a.text;
+        if (raw && typeof raw === 'object') {
+          if (Array.isArray(raw)) {
+            var joined = [];
+            for (var i = 0; i < raw.length; i++) {
+              var part = raw[i];
+              if (part && typeof part === 'object' && part.text !== undefined) joined.push(String(part.text));
+              else if (typeof part !== 'object') joined.push(String(part));
+            }
+            var j = joined.join('').trim();
+            if (j) sgTexts.push(j);
+          } else if (raw.text !== undefined && raw.text !== null) {
+            var inner = String(raw.text).trim();
+            if (inner) sgTexts.push(inner);
+          }
+        } else if (typeof raw === 'string' || typeof raw === 'number') {
+          var s = String(raw).trim();
+          if (s) sgTexts.push(s);
+        }
+      }
+      var kids = node.children || (node.getChildren && node.getChildren()) || [];
+      for (var k = 0; k < kids.length; k++) walk(kids[k], depth + 1);
+    };
+    walk(cell, 0);
+  }
+  if (sgTexts.length > 0) {
+    return sgTexts.join('');
+  }
+  var overflow = null;
+  try { overflow = t.getCellOverflowText ? t.getCellOverflowText(c, r) : null; } catch (e) {}
+  if (overflow !== null && overflow !== undefined && String(overflow).trim()) {
+    return String(overflow).trim().slice(0, 300);
+  }
+  var cv = null;
+  try { cv = t.getCellValue ? t.getCellValue(c, r) : null; } catch (e2) {}
+  if (cv !== null && cv !== undefined) {
+    if (typeof cv === 'object') {
+      try { return JSON.stringify(cv).slice(0, 300); } catch (e3) { return String(cv).slice(0, 300); }
+    }
+    return String(cv).slice(0, 300);
+  }
+  var rawVal = null;
+  try { rawVal = t.getCellRawValue ? t.getCellRawValue(c, r) : null; } catch (e4) {}
+  if (rawVal !== null && rawVal !== undefined) {
+    if (typeof rawVal === 'object') {
+      try { return JSON.stringify(rawVal).slice(0, 300); } catch (e5) { return String(rawVal).slice(0, 300); }
+    }
+    return String(rawVal).slice(0, 300);
+  }
+  try {
+    var def = t.getBodyColumnDefine && t.getBodyColumnDefine(c, r);
+    var field = def ? (def.field || def.key) : null;
+    var record = t.getCellOriginRecord ? t.getCellOriginRecord(c, r) : null;
+    if (record && field && record[field] !== undefined && record[field] !== null && typeof record[field] !== 'object') {
+      return String(record[field]).slice(0, 300);
+    }
+  } catch (e6) {}
+  return "";
+};
+
+var extractCellStyle = function (cell, c, r) {
+  var bg_color = null;
+  var text_color = null;
+  var interactive = false;
+  if (cell) {
+    var a = cell.attribute || {};
+    if (a.fill !== undefined && a.fill !== null) {
+      bg_color = String(a.fill);
+    }
+    var walk = function (node, depth) {
+      if (!node || depth > 7) return;
+      var na = node.attribute || {};
+      var type = String(node.type || '').toLowerCase();
+      if ((type === 'rect' || type === 'group') && bg_color === null && na.fill !== undefined && na.fill !== null) {
+        bg_color = String(na.fill);
+      }
+      if (type === 'text' || na.text !== undefined) {
+        if (text_color === null && na.fill !== undefined && na.fill !== null) {
+          text_color = String(na.fill);
+        }
+        if (na.cursor === 'pointer') interactive = true;
+        if (na.underline === 1 || na.underline === true || String(na.underline) === 'underline') interactive = true;
+      }
+      if (na.cursor === 'pointer') interactive = true;
+      var kids = node.children || (node.getChildren && node.getChildren()) || [];
+      for (var k = 0; k < kids.length; k++) walk(kids[k], depth + 1);
+    };
+    walk(cell, 0);
+  }
+  try {
+    if (t.getCellType && t.getCellType(c, r) === 'link') interactive = true;
+  } catch (e) {}
+  try {
+    if (t.isCellEditable && t.isCellEditable(c, r)) interactive = true;
+  } catch (e2) {}
+  return { bg_color: bg_color, text_color: text_color, interactive: interactive };
+};
+
+var extractCellIcons = function (cell) {
+  if (!cell) return [];
+  var icons = [];
+  var queue = [{ node: cell, depth: 0 }];
+  var seen = new Set();
+  var visited = 0;
+  while (queue.length && visited < 300 && icons.length < 12) {
+    var cur = queue.shift();
+    var node = cur.node;
+    if (!node || seen.has(node) || cur.depth > 8) continue;
+    seen.add(node); visited++;
+    if (cur.depth > 0) {
+      var a = node.attribute || {};
+      var name = iconName(node);
+      var isText = String(node.type || '').toLowerCase() === 'text' || a.text !== undefined;
+      var b = node.globalAABBBounds;
+      if (name && !isText && !structural[name.toLowerCase()] && b) {
+        var x1 = Number(b.x1), y1 = Number(b.y1), x2 = Number(b.x2), y2 = Number(b.y2);
+        var w = x2 - x1, h = y2 - y1;
+        if ([x1, y1, x2, y2, w, h].every(Number.isFinite) && w > 0 && w < 300 && h > 0 && h < 300) {
+          var fname = name.toLowerCase();
+          var fn = 'custom';
+          if (fname.indexOf('sort') >= 0) fn = 'sort';
+          else if (fname.indexOf('filter') >= 0) fn = 'filter';
+          else if (fname.indexOf('dropdown') >= 0 || fname.indexOf('downward') >= 0) fn = 'dropdown';
+          else if (fname.indexOf('freeze') >= 0) fn = 'freeze';
+          else if (fname.indexOf('checkbox') >= 0) fn = 'checkbox';
+          else if (fname.indexOf('expand') >= 0) fn = 'expand';
+          else if (fname.indexOf('collapse') >= 0) fn = 'collapse';
+          icons.push({
+            name: name,
+            function: fn,
+            box: { x: x1, y: y1, width: w, height: h },
+            center: { x: (x1 + x2) / 2, y: (y1 + y2) / 2 }
+          });
+        }
+      }
+    }
+    var kids = childrenOf(node);
+    for (var i = 0; i < kids.length; i++) queue.push({ node: kids[i], depth: cur.depth + 1 });
+  }
+  return icons;
+};
+
+// Scope 1: 单单元格感知
+if (target_col !== null && target_row !== null) {
+  var cell = getCellNode(target_col, target_row);
+  var text = extractCellText(cell, target_col, target_row);
+  var style = extractCellStyle(cell, target_col, target_row);
+  var geo = getCellBounds(target_col, target_row, cell);
+  var icons = extractCellIcons(cell);
+  return JSON.stringify({
+    bound: true,
+    scope: "cell",
+    col: target_col,
+    row: target_row,
+    text: text,
+    bg_color: style.bg_color,
+    text_color: style.text_color,
+    interactive: style.interactive,
+    bounds: geo.box,
+    center: geo.center,
+    blank_point: geo.blank_point,
+    icons: icons
+  });
+}
+
+// Scope 2: 单列感知（含表头、拖拽调宽分界点、换序锚点及视口内可见行）
+if (target_col !== null && target_row === null) {
+  var headerRows = num(t.columnHeaderLevelCount) || num(t.headerRowCount) || 1;
+  var headerRow = Math.max(0, headerRows - 1);
+  var field = '', title = '', width = 0;
+  try { field = String(t.getBodyField ? t.getBodyField(target_col, headerRows) : ''); } catch (e) {}
+  try {
+    var def = t.getBodyColumnDefine ? t.getBodyColumnDefine(target_col, headerRows) : null;
+    if (!field && def) field = String(def.field || def.key || '');
+    if (def && (def.title || def.header)) title = String(def.title || def.header);
+    if (def && def.width) width = num(def.width) || 0;
+  } catch (e2) {}
+  if (!title) {
+    try { title = String(t.getCellValue ? t.getCellValue(target_col, headerRow) : ''); } catch (e3) {}
+  }
+  if (!width) {
+    try { width = t.getColWidth ? t.getColWidth(target_col) : 0; } catch (e4) {}
+  }
+  var headerCell = getCellNode(target_col, headerRow);
+  var headerGeo = getCellBounds(target_col, headerRow, headerCell);
+  if (!width && headerGeo.box) width = headerGeo.box.width;
+  var headerIcons = extractCellIcons(headerCell);
+  var borderRight = headerGeo.box ? { x: headerGeo.box.x + headerGeo.box.width, y: headerGeo.center.y } : null;
+
+  var visRange = null;
+  try { visRange = t.getBodyVisibleCellRange ? t.getBodyVisibleCellRange() : null; } catch (e5) {}
+  var rStart = (visRange && visRange.rowStart !== undefined) ? visRange.rowStart : headerRows;
+  var rEnd = (visRange && visRange.rowEnd !== undefined) ? visRange.rowEnd : Math.min(num(t.rowCount) || 0, headerRows + 20);
+  var cells = [];
+  for (var r = rStart; r <= rEnd; r++) {
+    var cNode = getCellNode(target_col, r);
+    var cText = extractCellText(cNode, target_col, r);
+    var cStyle = extractCellStyle(cNode, target_col, r);
+    var cGeo = getCellBounds(target_col, r, cNode);
+    cells.push({
+      row: r,
+      text: cText,
+      bg_color: cStyle.bg_color,
+      text_color: cStyle.text_color,
+      interactive: cStyle.interactive,
+      bounds: cGeo.box,
+      center: cGeo.center,
+      blank_point: cGeo.blank_point
+    });
+  }
+  return JSON.stringify({
+    bound: true,
+    scope: "column",
+    col: target_col,
+    field: field,
+    title: title,
+    width: width,
+    header_center: headerGeo.center,
+    border_right: borderRight,
+    header_icons: headerIcons,
+    cells: cells
+  });
+}
+
+// Scope 3: 单行感知（行背景色、行高及全列紧凑数据）
+if (target_row !== null && target_col === null) {
+  var colCount = num(t.colCount) || 0;
+  var headerRows = num(t.columnHeaderLevelCount) || num(t.headerRowCount) || 1;
+  var rowHeight = 0;
+  try { rowHeight = t.getRowHeight ? t.getRowHeight(target_row) : 0; } catch (e) {}
+  var rowBg = null;
+  var rowCells = [];
+  for (var c = 0; c < colCount; c++) {
+    var cNode = getCellNode(c, target_row);
+    var cText = extractCellText(cNode, c, target_row);
+    var cStyle = extractCellStyle(cNode, c, target_row);
+    var cGeo = getCellBounds(c, target_row, cNode);
+    if (rowBg === null && cStyle.bg_color) rowBg = cStyle.bg_color;
+    if (!rowHeight && cGeo.box) rowHeight = cGeo.box.height;
+    var field = '', title = '';
+    try {
+      var def = t.getBodyColumnDefine ? t.getBodyColumnDefine(c, headerRows) : null;
+      if (def) { field = String(def.field || def.key || ''); title = String(def.title || def.header || ''); }
+    } catch (e2) {}
+    rowCells.push({
+      col: c,
+      field: field,
+      title: title,
+      text: cText,
+      bg_color: cStyle.bg_color,
+      text_color: cStyle.text_color,
+      interactive: cStyle.interactive,
+      bounds: cGeo.box,
+      center: cGeo.center,
+      blank_point: cGeo.blank_point,
+      icons: extractCellIcons(cNode)
+    });
+  }
+  return JSON.stringify({
+    bound: true,
+    scope: "row",
+    row: target_row,
+    height: rowHeight,
+    bg_color: rowBg,
+    cells: rowCells
+  });
+}
+
+// Scope 4: 区域切片感知（计算矩形矩阵与安全拖选起点/终点）
+if (col_range !== null || row_range !== null) {
+  var colCount = num(t.colCount) || 0;
+  var rowCount = num(t.rowCount) || 0;
+  var headerRows = num(t.columnHeaderLevelCount) || num(t.headerRowCount) || 1;
+  var visRange = null;
+  try { visRange = t.getBodyVisibleCellRange ? t.getBodyVisibleCellRange() : null; } catch (e) {}
+
+  var c0 = col_range ? col_range[0] : (visRange && visRange.colStart !== undefined ? visRange.colStart : 0);
+  var c1 = col_range ? col_range[1] : (visRange && visRange.colEnd !== undefined ? visRange.colEnd : Math.min(colCount - 1, 10));
+  var r0 = row_range ? row_range[0] : (visRange && visRange.rowStart !== undefined ? visRange.rowStart : headerRows);
+  var r1 = row_range ? row_range[1] : (visRange && visRange.rowEnd !== undefined ? visRange.rowEnd : Math.min(rowCount - 1, headerRows + 10));
+
+  c0 = Math.max(0, Math.min(c0, colCount - 1));
+  c1 = Math.max(0, Math.min(c1, colCount - 1));
+  r0 = Math.max(0, Math.min(r0, rowCount - 1));
+  r1 = Math.max(0, Math.min(r1, rowCount - 1));
+
+  if (c0 > c1) { var tc = c0; c0 = c1; c1 = tc; }
+  if (r0 > r1) { var tr = r0; r0 = r1; r1 = tr; }
+
+  var startCell = getCellNode(c0, r0);
+  var startGeo = getCellBounds(c0, r0, startCell);
+  var endCell = getCellNode(c1, r1);
+  var endGeo = getCellBounds(c1, r1, endCell);
+
+  var cells = [];
+  for (var r = r0; r <= r1; r++) {
+    var rowList = [];
+    for (var c = c0; c <= c1; c++) {
+      var cNode = getCellNode(c, r);
+      var cText = extractCellText(cNode, c, r);
+      var cStyle = extractCellStyle(cNode, c, r);
+      var cGeo = getCellBounds(c, r, cNode);
+      rowList.push({
+        col: c,
+        row: r,
+        text: cText,
+        bg_color: cStyle.bg_color,
+        text_color: cStyle.text_color,
+        interactive: cStyle.interactive,
+        bounds: cGeo.box,
+        center: cGeo.center,
+        blank_point: cGeo.blank_point
+      });
+    }
+    cells.push(rowList);
+  }
+
+  return JSON.stringify({
+    bound: true,
+    scope: "range",
+    col_range: [c0, c1],
+    row_range: [r0, r1],
+    drag_start: startGeo.blank_point,
+    drag_end: endGeo.blank_point,
+    cells: cells
+  });
+}
+
+// Scope 5: 全表紧凑可视骨架（列头 + 扁平可视矩阵）
+var colCount = num(t.colCount) || 0;
+var rowCount = num(t.rowCount) || 0;
+var headerRows = num(t.columnHeaderLevelCount) || num(t.headerRowCount) || 1;
+var headerRow = Math.max(0, headerRows - 1);
+var visRange = null;
+try { visRange = t.getBodyVisibleCellRange ? t.getBodyVisibleCellRange() : null; } catch (e) {}
+
+var cStart = (visRange && visRange.colStart !== undefined) ? visRange.colStart : 0;
+var cEnd = (visRange && visRange.colEnd !== undefined) ? visRange.colEnd : Math.min(colCount - 1, 15);
+var rStart = (visRange && visRange.rowStart !== undefined) ? visRange.rowStart : headerRows;
+var rEnd = (visRange && visRange.rowEnd !== undefined) ? Math.min(visRange.rowEnd, rStart + 19) : Math.min(rowCount - 1, headerRows + 19);
+
+var headers = [];
+for (var c = 0; c < colCount; c++) {
+  var field = '', title = '', width = 0;
+  try {
+    var def = t.getBodyColumnDefine ? t.getBodyColumnDefine(c, headerRows) : null;
+    if (def) {
+      field = String(def.field || def.key || '');
+      title = String(def.title || def.header || '');
+      if (def.width) width = num(def.width) || 0;
+    }
+  } catch (e1) {}
+  if (!field) { try { field = String(t.getBodyField ? t.getBodyField(c, headerRows) : ''); } catch (e2) {} }
+  if (!title) { try { title = String(t.getCellValue ? t.getCellValue(c, headerRow) : ''); } catch (e3) {} }
+  if (!width) { try { width = t.getColWidth ? t.getColWidth(c) : 0; } catch (e4) {} }
+  headers.push({ col: c, field: field, title: title, width: width });
+}
+
+var rows = [];
+for (var r = rStart; r <= rEnd; r++) {
+  var rowData = { row: r, cells: [] };
+  var rowBg = null;
+  for (var col = cStart; col <= cEnd; col++) {
+    var cNode = getCellNode(col, r);
+    var cText = extractCellText(cNode, col, r);
+    var cStyle = extractCellStyle(cNode, col, r);
+    if (rowBg === null && cStyle.bg_color && cStyle.bg_color !== '#fff' && cStyle.bg_color !== '#ffffff' && cStyle.bg_color !== 'rgb(255, 255, 255)') {
+      rowBg = cStyle.bg_color;
+    }
+    var cellData = { col: col, text: cText };
+    if (cStyle.interactive) cellData.interactive = true;
+    if (cStyle.bg_color && cStyle.bg_color !== rowBg && cStyle.bg_color !== '#fff' && cStyle.bg_color !== '#ffffff' && cStyle.bg_color !== 'rgb(255, 255, 255)') {
+      cellData.bg_color = cStyle.bg_color;
+    }
+    if (cStyle.text_color && cStyle.text_color !== '#000' && cStyle.text_color !== '#000000' && cStyle.text_color !== '#333' && cStyle.text_color !== '#333333' && cStyle.text_color !== 'rgb(0, 0, 0)') {
+      cellData.text_color = cStyle.text_color;
+    }
+    rowData.cells.push(cellData);
+  }
+  if (rowBg) rowData.bg_color = rowBg;
+  rows.push(rowData);
+}
+
+return JSON.stringify({
+  bound: true,
+  scope: "visible_all",
+  visible_range: { colStart: cStart, colEnd: cEnd, rowStart: rStart, rowEnd: rEnd },
+  colCount: colCount,
+  rowCount: rowCount,
+  headers: headers,
+  rows: rows
+});
+"""
+
+VTABLE_SCRIPTS["inspect"] = VTABLE_INSPECT

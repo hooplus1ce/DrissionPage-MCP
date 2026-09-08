@@ -98,4 +98,36 @@ def page_controls(
             continue
     if data is None:
         raise ToolError("控件清单采集失败")
+
+    # 提取面包屑模块路径（主文档 .ant-breadcrumb 为准，防止凭 URL 臆测）
+    try:
+        bc_data = tab.run_js(
+            r"""
+            var container = document.querySelector('.ant-breadcrumb, [class*="breadcrumb"]');
+            if (!container) return null;
+            var links = container.querySelectorAll('.ant-breadcrumb-link');
+            var items = [];
+            if (links.length > 0) {
+                for (var i = 0; i < links.length; i++) {
+                    var t = links[i].innerText ? links[i].innerText.trim() : '';
+                    if (t) items.push(t);
+                }
+            } else {
+                var spans = container.querySelectorAll('span');
+                for (var j = 0; j < spans.length; j++) {
+                    var st = spans[j].innerText ? spans[j].innerText.trim() : '';
+                    if (st && st !== '>' && st !== '/') items.push(st);
+                }
+            }
+            return items.length > 0 ? items : null;
+            """
+        )
+        if isinstance(bc_data, list):
+            items = [str(x) for x in bc_data if str(x).strip()]
+            if items:
+                data["breadcrumb"] = items
+                data["module_path"] = " > ".join(items)
+    except Exception:
+        pass
+
     return data

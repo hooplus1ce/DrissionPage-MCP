@@ -39,3 +39,6 @@ htmlcov/
 # Local scratch / dump artifacts
 .zcode/
 dom_snapshot/
+
+# Local client config
+.mcp.json

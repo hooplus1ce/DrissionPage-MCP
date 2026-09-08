@@ -7,13 +7,12 @@
 from __future__ import annotations
 
 import random
-
 from fastmcp.exceptions import ToolError
 
+from ..cursor import act_cursor, glide_cursor
 from ..manager import manager
 from ..models import ActionChainResult, ActionStep, MessageResult
 from fastmcp import FastMCP
-
 # 领域子服务器：由 server.py mount 组合（官方 composition 模式）
 mcp = FastMCP("Actions")
 
@@ -39,25 +38,40 @@ def _run_step(actions, step: ActionStep) -> None:
     ele = manager.get_element(step.element_id) if step.element_id else None
 
     if act == "move_to":
+        duration = step.duration if step.duration is not None else 0.5
+        duration_ms = int(duration * 1000)
         if ele is not None:
-            actions.move_to(ele, offset_x=step.offset_x, offset_y=step.offset_y,
-                            duration=step.duration if step.duration is not None else 0.5)
+            try:
+                mid_point = (step.offset_x is None and step.offset_y is None)
+                loc = ele.rect.viewport_midpoint if mid_point else ele.rect.viewport_location
+                glide_cursor(actions, loc[0] + (step.offset_x or 0), loc[1] + (step.offset_y or 0), duration_ms)
+            except Exception:
+                pass
+            actions.move_to(ele, offset_x=step.offset_x, offset_y=step.offset_y, duration=duration)
         elif step.x is not None and step.y is not None:
-            actions.move_to((step.x, step.y), duration=step.duration if step.duration is not None else 0.5)
+            glide_cursor(actions, step.x, step.y, duration_ms)
+            actions.move_to((step.x, step.y), duration=duration)
         else:
             raise ToolError("move_to 需要 element_id 或 x/y 坐标")
     elif act == "move":
-        actions.move(step.offset_x or 0, step.offset_y or 0,
-                     duration=step.duration if step.duration is not None else 0.5)
+        duration = step.duration if step.duration is not None else 0.5
+        duration_ms = int(duration * 1000)
+        curr_x = getattr(actions, "curr_x", 0) + (step.offset_x or 0)
+        curr_y = getattr(actions, "curr_y", 0) + (step.offset_y or 0)
+        glide_cursor(actions, curr_x, curr_y, duration_ms)
+        actions.move(step.offset_x or 0, step.offset_y or 0, duration=duration)
     elif act in ("click", "r_click", "m_click"):
+        act_cursor(actions, "click")
         fn = getattr(actions, act)
         if ele is not None:
             fn(ele, times=step.times or 1)
         else:
             fn(times=step.times or 1)
     elif act == "hold":
+        act_cursor(actions, "down")
         actions.hold(ele)
     elif act == "release":
+        act_cursor(actions, "up")
         actions.release(ele)
     elif act == "scroll":
         actions.scroll(step.delta_y or 0, step.delta_x or 0, on_ele=ele)

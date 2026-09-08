@@ -398,3 +398,117 @@ def hover_cell(session: VTableSession, col: int, row: int) -> dict:
             "textColors": neighbor.get("textColors"),
         },
     }
+
+
+def _resolve_col_index(session: VTableSession, col_name: str) -> int:
+    """按 field 或 title 智能解析列名，完全匹配优先，不区分大小写包含匹配回退。"""
+    headers_data = _run(session.frame, "headers")
+    columns = headers_data.get("columns") or []
+    if not columns:
+        raise ToolError("无法解析列名：表格未返回任何列头信息")
+
+    col_clean = col_name.strip()
+    col_lower = col_clean.lower()
+
+    # 1. 完全匹配优先 (field 或 title)
+    for col_info in columns:
+        c_field = str(col_info.get("field") or "").strip()
+        c_title = str(col_info.get("title") or "").strip()
+        if col_clean == c_title or col_clean == c_field:
+            return int(col_info["col"])
+
+    # 2. 忽略大小写完全匹配
+    for col_info in columns:
+        c_field = str(col_info.get("field") or "").strip().lower()
+        c_title = str(col_info.get("title") or "").strip().lower()
+        if col_lower == c_title or col_lower == c_field:
+            return int(col_info["col"])
+
+    # 3. 包含匹配回退
+    for col_info in columns:
+        c_field = str(col_info.get("field") or "").strip().lower()
+        c_title = str(col_info.get("title") or "").strip().lower()
+        if col_lower in c_title or col_lower in c_field:
+            return int(col_info["col"])
+
+    available = [
+        f"{c.get('title') or c.get('field')}(col={c.get('col')})"
+        for c in columns
+        if c.get("title") or c.get("field")
+    ]
+    raise ToolError(
+        f"未找到匹配的列 '{col_name}'。可用列清单: {', '.join(available)}"
+    )
+
+
+def _transform_inspect_result(data: dict, session: VTableSession) -> dict:
+    """将 canvas 局部坐标转换为视口绝对坐标，并为 bounds 添加 viewport 映射。"""
+    def _pt(p: dict | None) -> dict | None:
+        if isinstance(p, dict) and "x" in p and "y" in p and p["x"] is not None and p["y"] is not None:
+            vx, vy = session.to_viewport(float(p["x"]), float(p["y"]))
+            return {"x": round(vx, 1), "y": round(vy, 1)}
+        return p
+
+    def _box(b: dict | None) -> dict | None:
+        if isinstance(b, dict) and "x" in b and "y" in b and b["x"] is not None and b["y"] is not None:
+            vx, vy = session.to_viewport(float(b["x"]), float(b["y"]))
+            res = dict(b)
+            res["viewport_x"] = round(vx, 1)
+            res["viewport_y"] = round(vy, 1)
+            return res
+        return b
+
+    def _cell(c: dict) -> dict:
+        if "center" in c:
+            c["center"] = _pt(c.get("center"))
+        if "blank_point" in c:
+            c["blank_point"] = _pt(c.get("blank_point"))
+        if "bounds" in c:
+            c["bounds"] = _box(c.get("bounds"))
+        if "icons" in c and isinstance(c["icons"], list):
+            c["icons"] = [_icon(ic) for ic in c["icons"]]
+        return c
+
+    def _icon(ic: dict) -> dict:
+        if "center" in ic:
+            ic["center"] = _pt(ic.get("center"))
+        if "box" in ic:
+            ic["box"] = _box(ic.get("box"))
+        return ic
+
+    for k in ("center", "blank_point", "border_right", "header_center", "drag_start", "drag_end"):
+        if k in data:
+            data[k] = _pt(data.get(k))
+    if "bounds" in data:
+        data["bounds"] = _box(data.get("bounds"))
+    if "icons" in data and isinstance(data["icons"], list):
+        data["icons"] = [_icon(ic) for ic in data["icons"]]
+    if "header_icons" in data and isinstance(data["header_icons"], list):
+        data["header_icons"] = [_icon(ic) for ic in data["header_icons"]]
+    if "cells" in data and isinstance(data["cells"], list):
+        if data["cells"] and isinstance(data["cells"][0], list):
+            data["cells"] = [[_cell(c) for c in row] for row in data["cells"]]
+        else:
+            data["cells"] = [_cell(c) for c in data["cells"]]
+    return data
+
+
+def inspect_vtable(
+    session: VTableSession,
+    col: int | str | None = None,
+    row: int | None = None,
+    col_range: list[int] | None = None,
+    row_range: list[int] | None = None,
+) -> dict:
+    """VTable 可视化多粒度快照与交互锚点计算。"""
+    target_col_idx = None
+    if isinstance(col, str):
+        target_col_idx = _resolve_col_index(session, col)
+    elif col is not None:
+        target_col_idx = int(col)
+
+    data = _run(session.frame, "inspect", target_col_idx, row, col_range, row_range)
+    if not data or data.get("bound") is False:
+        _require_bound(data, "感知 VTable 状态")
+
+    return _transform_inspect_result(data, session)

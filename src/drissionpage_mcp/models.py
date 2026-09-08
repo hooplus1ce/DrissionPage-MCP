@@ -35,7 +35,9 @@ class PageInfo(BaseModel):
     title: str | None = None
     ready_state: str | None = None
     user_agent: str | None = None
-
+    breadcrumb: str | None = None
+    breadcrumb_items: list[str] = Field(default_factory=list)
+    active_frame: dict | None = None
 
 class HtmlResult(BaseModel):
     tab_id: str

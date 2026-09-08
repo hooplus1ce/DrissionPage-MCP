@@ -15,7 +15,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+
+    _env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+    if _env_path.is_file():
+        load_dotenv(dotenv_path=_env_path, override=False)
+    else:
+        load_dotenv(override=False)
+except Exception:
+    pass
 from fastmcp import FastMCP
 from fastmcp.server.lifespan import lifespan
 
@@ -38,9 +49,10 @@ iframe 功能模块（如 APS 等管理系统）：
 - 每个二级菜单/功能模块以 iframe 挂载在顶级 DOM，激活态（可见）的 iframe 即当前页面
 - 先 frame_list 查看，用 frame='active' 把定位范围限定到激活模块，
   避免主文档与 iframe 中同名元素混淆
+- 模块路径识别权威依据：严格以主框架顶部的面包屑导航（.ant-breadcrumb / .ant-breadcrumb-link）为准，
+  get_page_info 与 page_controls 已自动提取并返回 breadcrumb / module_path，严禁根据 iframe 的 src/URL 猜测模块路径！
 - AntD 弹窗/下拉/日期/消息气泡以 portal 渲染在其所属功能模块的文档中，
   antd_select / antd_date_pick / antd_modal_click / get_toasts 已自动处理
-
 真实交互（UI 测试首选）：
 - element_click 默认通过 Actions 派发真实鼠标事件（移动→按下→抬起）
 - action_chain 可编排复杂真实操作：move_to/click/hold+move+release 拖拽/

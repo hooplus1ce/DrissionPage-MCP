@@ -51,6 +51,50 @@ def _patch_dp_tab_ids() -> None:
 
 _patch_dp_tab_ids()
 
+def _patch_dp_convert_argument() -> None:
+    """修复 DrissionPage 5.0.0b1 的 convert_argument 缺陷。
+
+    原实现仅支持 (int, float, str, bool, dict)，未处理 None 与 list/tuple/set，
+    导致向 run_js 传递 None 或数组参数时抛 TypeError。上游修复后可移除本补丁。
+    """
+    import DrissionPage._elements.chromium_element as ce
+
+    orig = ce.convert_argument
+
+    def _convert_argument(arg):
+        if arg is None:
+            return {"value": None}
+        if isinstance(arg, (list, tuple, set)):
+            return {"value": [_convert_argument(i)["value"] for i in arg]}
+        return orig(arg)
+
+    ce.convert_argument = _convert_argument
+
+
+_patch_dp_convert_argument()
+
+def _patch_dp_show_trail() -> None:
+    """将 DrissionPage 的 show_trail 升级为 Windows 11 Dark HD 60FPS 虚拟光标。"""
+    try:
+        from DrissionPage._units.setter import ChromiumBaseSetter
+        from .cursor import ensure_cursor_installed, set_cursor_enabled, hide_cursor
+
+        def show_trail(self, on_off=True):
+            tab = getattr(self._owner, "tab", self._owner)
+            set_cursor_enabled(on_off)
+            if on_off:
+                ensure_cursor_installed(tab)
+            else:
+                hide_cursor(tab)
+            return self
+
+        ChromiumBaseSetter.show_trail = show_trail
+    except Exception:
+        pass
+
+
+_patch_dp_show_trail()
+
 MAX_ELEMENTS = 1000
 
 
