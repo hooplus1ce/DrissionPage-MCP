@@ -1,0 +1,30 @@
+[project]
+name = "drissionpage-mcp"
+version = "0.1.0"
+description = "MCP server wrapping DrissionPage 5.0 for browser automation"
+readme = "README.md"
+authors = [
+    { name = "hooplus1ce", email = "hooplus1ce@outlook.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "fastmcp>=4.0.3",
+    "drissionpage==5.0.0b1",
+]
+
+[project.scripts]
+drissionpage-mcp = "drissionpage_mcp.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=1.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.7,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
