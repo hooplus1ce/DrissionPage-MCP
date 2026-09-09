@@ -591,10 +591,9 @@ def add_node(
     # 执行真实的鼠标长按拖拽链路：移动 -> 长按 -> 60FPS平滑拖行 -> 释放
     actions = session.tab.actions
 
-    glide_cursor(session.tab, src_x, src_y, 250)
-    actions.move_to((src_x, src_y), duration=0.25)
-    time.sleep(0.08)
-
+    glide_cursor(session.tab, src_x, src_y, 350)
+    actions.move_to((src_x, src_y), duration=0.3)
+    time.sleep(0.12)
     KIND_COLORS = {
         "start": "#389e0d",
         "开始节点": "#389e0d",
@@ -643,8 +642,8 @@ def add_node(
     update_cursor_pos(session.tab, nudge_x, nudge_y, down=True)
     time.sleep(0.04)
 
-    # 60 FPS 连续步进插值平滑物理拖拽轨迹，驱动浏览器原生拖拽与虚拟光标同步滑入画布
-    steps = 30
+    # 60 FPS 连续步进插值平滑物理拖拽轨迹，驱动浏览器原生拖拽与虚拟光标同步滑入画布（约800ms平稳滑行）
+    steps = 40
     dx = dst_x - nudge_x
     dy = dst_y - nudge_y
     for s in range(1, steps + 1):
@@ -664,9 +663,9 @@ def add_node(
             )
         except Exception:
             pass
-        time.sleep(0.016)
+        time.sleep(0.02)
 
-    time.sleep(0.08)
+    time.sleep(0.12)
     try:
         session.tab._run_cdp(
             "Input.dispatchMouseEvent",
