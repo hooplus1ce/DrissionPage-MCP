@@ -143,3 +143,64 @@ class ActionChainResult(BaseModel):
     ok: bool
     steps_executed: int
     actions: list[str]
+
+
+class ProfileInfo(BaseModel):
+    """档案元信息（永不含密码）。"""
+
+    name: str
+    username: str | None = None
+    role: str | None = Field(default=None, description="TOML 可选的业务角色标签")
+    admin_url: str | None = None
+    login_page: str | None = None
+    cookie_domain: str | None = None
+    has_password: bool = Field(description="是否已配置密码（密码本身不下发）")
+    source: str = Field(description="配置来源：env / file:profiles.toml / file+env")
+
+
+class AuthResult(BaseModel):
+    ok: bool
+    profile: str
+    source: str = Field(
+        default="http",
+        description="http=本次实时登录, session=复用了缓存的登录态",
+    )
+    message: str | None = None
+    cookie_count: int = 0
+    cookie_names: list[str] = Field(default_factory=list)
+    has_token: bool = Field(default=False, description="是否已获取访问令牌（令牌值不下发）")
+    captcha_required: bool = Field(
+        default=False, description="需要验证码：先 auth_captcha 看图，再带 captcha_code 调用"
+    )
+    captcha_id: str | None = None
+    update_pwd: bool = Field(default=False, description="服务端要求修改初始密码")
+    tab_id: str | None = None
+    url: str | None = None
+    ready_state: str | None = None
+
+
+class ProfileSession(BaseModel):
+    """一个已打开的多账号档案会话（独立 BrowserContext）。"""
+
+    profile: str
+    browser_id: str
+    context_id: str
+    tab_id: str
+    url: str | None = None
+    title: str | None = None
+    logged_in: bool = False
+    reused: bool = Field(default=False, description="是否复用了已打开的档案会话")
+    login: AuthResult | None = None
+
+
+class NavMenuResult(BaseModel):
+    """模块菜单导航结果。"""
+
+    ok: bool
+    menu_name: str
+    tab_id: str
+    breadcrumb: str | None = None
+    breadcrumb_items: list[str] = Field(default_factory=list)
+    active_frame: dict | None = None
+    reused_tab: bool = False
+    message: str | None = None

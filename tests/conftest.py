@@ -57,6 +57,10 @@ class FakeWait:
         self._tab.steps.append(("wait_eles_loaded", locator))
         return self._tab.wait_result
 
+    def __call__(self, seconds=0, **kwargs):
+        self._tab.steps.append(("wait", seconds))
+        return self
+
 
 class FakeSet:
     """模拟 tab.set 命名空间中与 cookies 相关的部分。
@@ -94,6 +98,7 @@ class FakeTab:
         self.cookies_value: list[dict] = []
         self.ele_result = None
         self.ele_queue: list = []
+        self.ele_results: dict = {}
         self.eles_result: list = []
         self.eles_results: dict = {}
         self.steps: list[tuple] = []
@@ -112,6 +117,10 @@ class FakeTab:
         self.url = url
         return FakeNav(url)
 
+    def run_js(self, script, *args, **kwargs):
+        self.steps.append(("run_js", script))
+        return None
+
     def back(self, steps=1):
         self.steps.append(("back", steps))
 
@@ -121,8 +130,25 @@ class FakeTab:
     def refresh(self, ignore_cache=False):
         self.steps.append(("refresh", ignore_cache))
 
+    def get_screenshot(self, path=None, name=None, as_bytes=None, as_base64=None, full_page=False, **kwargs):
+        self.steps.append(("get_screenshot", full_page))
+        data = b"\x89PNG-fake-tab-screenshot"
+        if path:
+            from pathlib import Path
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+        if as_bytes:
+            return data
+        if as_base64:
+            import base64
+            return base64.b64encode(data).decode()
+        return str(path)
+
     def ele(self, locator, index=1, timeout=None):
         self.steps.append(("ele", locator))
+        if isinstance(getattr(self, "ele_results", None), dict) and locator in self.ele_results:
+            return self.ele_results[locator]
         if self.ele_queue:
             return self.ele_queue.pop(0)
         return self.ele_result
@@ -173,6 +199,26 @@ class FakeElement:
         self._rect_size = (80, 30)
         self.select_result = True
         self.actions: list[tuple] = []
+        self.ele_result = None
+        self.ele_queue = []
+        self.eles_results = {}
+
+    def attr(self, name):
+        return self.attrs.get(name)
+
+    def ele(self, locator, index=1, timeout=None):
+        self.actions.append(("ele", locator))
+        if self.ele_queue:
+            return self.ele_queue.pop(0)
+        return self.ele_result
+
+    def eles(self, locator, timeout=None):
+        self.actions.append(("eles", locator))
+        if locator in self.eles_results:
+            return list(self.eles_results[locator])
+        if self.ele_result:
+            return [self.ele_result]
+        return []
 
     @property
     def css_selector(self):
@@ -248,6 +294,21 @@ class FakeElement:
 
     def by_index(self, index):
         return self.select_result
+
+    def get_screenshot(self, path=None, name=None, as_bytes=None, as_base64=None, **kwargs):
+        self.actions.append(("get_screenshot",))
+        data = b"\x89PNG-fake-ele-screenshot"
+        if path:
+            from pathlib import Path
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+        if as_bytes:
+            return data
+        if as_base64:
+            import base64
+            return base64.b64encode(data).decode()
+        return str(path)
 
 
 class FakeActions:
@@ -350,6 +411,21 @@ class FakeFrame:
         if locator in self.eles_results:
             return list(self.eles_results[locator])
         return [self.ele_result] if self.ele_result else []
+
+    def get_screenshot(self, path=None, name=None, as_bytes=None, as_base64=None, **kwargs):
+        self.actions.append(("get_screenshot",))
+        data = b"\x89PNG-fake-frame-screenshot"
+        if path:
+            from pathlib import Path
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+        if as_bytes:
+            return data
+        if as_base64:
+            import base64
+            return base64.b64encode(data).decode()
+        return str(path)
 
 
 def _install_wait(tab: FakeTab, wait_result: bool = True):

@@ -27,14 +27,16 @@ uv sync
 DrissionPage-MCP/
 ├── fastmcp.json             # 官方声明式项目配置（fastmcp run 自动读取）
 ├── server.py                # 文件型入口：fastmcp run / inspect 指向的 mcp 实例
-├── .env.example             # 环境变量样例（SHOW_CURSOR 光标可视化开关）
+├── .env.example             # 环境变量样例（光标开关 + HL_* 账号档案契约）
 ├── src/drissionpage_mcp/
 │   ├── server.py            # 组合根：主服务器 + mount 各领域子服务器 + lifespan + dev-tool 管控
 │   ├── tools/               # 按领域拆分的子服务器（官方 composition 模式）
 │   │   ├── browser.py    navigate.py    element.py    frame.py
 │   │   ├── action.py     antd.py        vtable.py     account.py
-│   │   └── snapshot.py   x6.py
+│   │   └── snapshot.py   x6.py          auth.py
 │   ├── manager.py           # 浏览器会话/上下文/元素注册表（含 DP 5.0.0b1 缺陷补丁）
+│   ├── profiles.py          # 账号档案注册表（HL_* / TOML，凭据脱敏）
+│   ├── login.py             # 登录 HTTP 引擎（标准库，验证码交多模态识别）
 │   ├── vtable.py            # VTable 坐标换算层
 │   ├── vtable_scripts.py    # VTable JS 片段库（含多粒度 inspect）
 │   ├── x6.py                # X6 画布会话与真实拖拽/连线
@@ -42,7 +44,7 @@ DrissionPage-MCP/
 │   ├── cursor.py            # Win11 虚拟光标（60FPS 滑行 + 点击涟漪）
 │   ├── overlays.py          # 浮层观察器（arm/drain）
 │   └── models.py            # 输出模型
-└── tests/                   # 112 个单测 + 1 个真浏览器冒烟（DPMCP_SMOKE=1 门控）
+└── tests/                   # 单测 + 1 个真浏览器冒烟（DPMCP_SMOKE=1 门控）
 ```
 
 ## 运行
@@ -69,7 +71,7 @@ uv run python -m drissionpage_mcp --transport http --port 8000
 }
 ```
 
-## 工具一览（66 个）
+## 工具一览（74 个）
 
 底层脚本工具 `run_js` 默认禁用且对客户端隐藏（`ENABLE_RUN_JS=true` 全局放开，
 或运行时 `enable_dev_tool` 临时解锁），避免绕过高阶领域工具。
@@ -78,13 +80,14 @@ uv run python -m drissionpage_mcp --transport http --port 8000
 |---|---|
 | 浏览器 | `browser_launch` `browser_connect` `browser_close` `browser_status` |
 | 标签页 | `tab_new` `tab_list` `tab_close` `tab_info` |
-| 导航 | `navigate` `navigate_back` `navigate_forward` `refresh` `wait_element` `get_page_info` `get_page_html` |
+| 导航 | `navigate` `nav_menu`（一键搜索直达 APS 功能模块） `navigate_back` `navigate_forward` `refresh` `wait_element` `get_page_info` `get_page_html` |
 | 元素 | `find_element` `find_elements` `element_info` `click`（通用：元素/选择器/坐标全能点击） `element_click` `element_input` `element_hover` `element_select` `element_check` `element_scroll` |
 | 多账号 | `context_new` `context_close` `context_list` `cookies_get` `cookies_set` `cookies_clear` |
+| 账号档案/登录 | `profile_list` `auth_captcha` `auth_login` `profile_open` `profile_close` `auth_session_clear` |
 | iframe | `frame_list`（所有定位工具支持 `frame` 参数：`'active'`=激活态模块 / 序号 / id） |
 | 真实交互 | `action_chain`（move_to/click/hold/drag/scroll/type/key 步骤编排，CDP Input 事件级）`press_key` |
 | AntD 弹层 | `antd_select`（多选自动 ESC 收回） `antd_get_options` `antd_date_pick` `antd_modal_click` `get_toasts` |
-| 页面快照 | `page_controls`（单次 JS 采集可交互控件，封顶 40 项，含面包屑模块路径） |
+| 页面快照 | `screenshot`（视口/整页/指定元素/iframe 截图，回传多模态 ImageContent） `page_controls`（单次 JS 采集可交互控件，封顶 40 项，含面包屑模块路径） |
 | VTable | `vtable_info` `vtable_inspect`（多粒度快照+交互锚点） `vtable_headers` `vtable_read_cells` `vtable_find_cell` `vtable_cell_info` `vtable_scroll_to_cell` `vtable_click_cell` `vtable_click_icon` `vtable_resolve_cell` `vtable_edit_cell` `vtable_get_selection` `vtable_cell_state` `vtable_scroll_viewport` `vtable_drag_scrollbar` `vtable_hover_cell` `vtable_cell_text` |
 | X6 流程图 | `x6_nodes` `x6_fit` `x6_move_node` `x6_connect` `x6_click_node` `x6_add_node` `x6_delete_node` |
 | 管控 | `enable_dev_tool` `disable_dev_tool`（临时解锁/锁定 `run_js`） |
@@ -94,6 +97,55 @@ uv run python -m drissionpage_mcp --transport http --port 8000
 服务在进程内维护三层注册表：`browser_id → Chromium`、`context_id → BrowserContext`、`element_id → 元素`。
 工具的 `browser_id` / `tab_id` 参数省略时作用于当前唯一会话/最新标签页；存在多个会话时必须显式指定。
 元素在页面刷新后会失效，需重新 `find_element` 定位。
+
+### 账号档案与登录（认证引导 + 多账号会话）
+
+目标系统为 APS 平台（demo18）：登录接口返回**访问令牌**，需写入 `localStorage` + cookie。
+凭据只驻留服务端：工具按**档案名**取用，任何返回值都不含密码与令牌。
+
+```toml
+# profiles.toml（HL_PROFILES_FILE 指向它；默认读取当前目录的同名文件）
+[profiles.aps]
+host_prefix = "demo18"          # 推导 host/URL：demo18 → demo18-scm.hoolinks.com
+username = "hooplus1ce"
+password = "..."
+role = "APS 管理员"
+
+[profiles.aps_approver]         # 多角色并行（权限/审批测试）
+host_prefix = "demo18"
+username = "hooplus1cer"
+password = "..."
+role = "审批人"
+```
+
+URL 与登录契约均由 `HL_HOST_PREFIX` 推导（APS 默认值），逐项可覆盖：
+
+| 项 | 默认值 |
+|---|---|
+| Admin URL | `https://{host}/static/admin/` |
+| 登录页（Referer） | `https://{host}/static/admin/login` |
+| 登录接口 | `POST /scmpsm/login/signin`（JSON 体 `{userName, userPwd, vcode}`） |
+| 验证码 | `GET /scmpsm/login/validateCode?key=regValidateCode` |
+| 成功判据 / 提示语 / 令牌字段 | `ok` / `msg` / `data` |
+| 令牌存储 | `localStorage["HL-Access-Token"]`（同时写入同名 cookie） |
+
+单档案场景可直接用 `.env` 的 `HL_*`（契约见 `.env.example`）。
+
+**验证码不经过任何 OCR 组件**——图片直接交给多模态模型识别：
+
+```
+profile_open(profile="aps")          → login.captcha_required=true, captcha_id=...
+auth_captcha(profile="aps")          → [提示文本, 验证码图片内容块]（模型读图）
+auth_login(profile="aps", captcha_id="...", captcha_code="2223") → 登录成功，返回令牌
+profile_open(profile="aps")          → 复用同一 context_id/tab_id 并注入登录态
+```
+
+- `profile_open` 为每个档案开**独立 BrowserContext**（cookies/令牌隔离），或签/会签等多角色
+  审批场景可并行开多套；`profile_close` 关闭上下文。
+- 登录态默认缓存（内存 + `.dpmcp/sessions/<profile>.json`，`HL_SESSION_TTL` 默认 12h），
+  复用失败或 `force=true` 时重新走验证码；`auth_session_clear` 清除缓存。
+- 登录 HTTP 走标准库 `urllib`（零新增依赖）；接口路径、字段名、成功判据、令牌字段均可在
+  档案中覆盖，换环境（如 demo18 → 其他前缀）只需改 `HL_HOST_PREFIX` 或对应字段。
 
 ### 面向 iframe 微前端的适配
 

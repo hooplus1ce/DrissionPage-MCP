@@ -47,7 +47,20 @@ DrissionPage-MCP：基于 DrissionPage 5.0 的浏览器自动化服务，面向 
 工具默认省略 browser_id / tab_id 时作用于当前唯一（或最新）会话/标签页；
 存在多个会话时必须显式指定 id。
 
+账号档案与登录（APS 平台）：
+- 凭据只驻留服务端：profile_list 查看已配置档案（.env 的 HL_* 或 HL_PROFILES_FILE 指向的 TOML），
+  工具只按档案名取用，任何返回值都不含密码与访问令牌
+- 多角色并行：profile_open(profile=...) 为每个档案开独立 BrowserContext + 标签页 + 自动登录；
+  或签/会签、权限测试需要多个账号各自登录时，用不同 profile 各开一套（cookies/令牌互不干扰）
+- 验证码不经过任何 OCR 组件：auth_login/profile_open 返回 captcha_required 时，
+  先 auth_captcha(profile=...) 取回验证码图片 → 由多模态模型读出字符 →
+  auth_login(profile=..., captcha_id=..., captcha_code="<识别结果>") 完成登录；
+  登录成功后访问令牌写入 localStorage["HL-Access-Token"] + 同名 cookie；
+  登录态自动缓存（HL_SESSION_TTL，默认 12h），force=true 可强制重登
+- profile_close 关闭档案上下文；auth_session_clear 清除缓存登录态
+
 iframe 功能模块（如 APS 等管理系统）：
+- 进入/切换功能模块优先使用 nav_menu(menu_name='...') 一键直达并自动等待激活 iframe，无需手动搜索与多轮点击
 - 每个二级菜单/功能模块以 iframe 挂载在顶级 DOM，激活态（可见）的 iframe 即当前页面
 - 先 frame_list 查看，用 frame='active' 把定位范围限定到激活模块，
   避免主文档与 iframe 中同名元素混淆
@@ -55,6 +68,7 @@ iframe 功能模块（如 APS 等管理系统）：
   get_page_info 与 page_controls 已自动提取并返回 breadcrumb / module_path，严禁根据 iframe 的 src/URL 猜测模块路径！
 - AntD 弹窗/下拉/日期/消息气泡以 portal 渲染在其所属功能模块的文档中，
   antd_select / antd_date_pick / antd_modal_click / get_toasts 已自动处理
+- screenshot 可对视口、整页、指定元素或激活模块 iframe 进行真实截图，回传图片内容块用于视觉核验
 真实交互（UI 测试首选）：
 - element_click 默认通过 Actions 派发真实鼠标事件（移动→按下→抬起）
 - action_chain 可编排复杂真实操作：move_to/click/hold+move+release 拖拽/
@@ -116,6 +130,7 @@ from .tools import (  # noqa: E402
     account,
     action,
     antd,
+    auth,
     browser,
     element,
     frame,
@@ -134,6 +149,7 @@ for _sub in (
     antd.mcp,
     vtable.mcp,
     account.mcp,
+    auth.mcp,
     snapshot.mcp,
     x6.mcp,
 ):

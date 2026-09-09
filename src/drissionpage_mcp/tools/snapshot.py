@@ -7,12 +7,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.utilities.types import Image
 
 from ..manager import manager
-from fastmcp import FastMCP
-
 # 领域子服务器：由 server.py mount 组合（官方 composition 模式）
 mcp = FastMCP("Snapshot")
 
@@ -131,3 +132,71 @@ def page_controls(
         pass
 
     return data
+
+
+@mcp.tool(
+    tags={"snapshot", "browser"},
+    annotations={"title": "页面或元素截图", "readOnlyHint": True},
+)
+def screenshot(
+    tab_id: str | None = None,
+    locator: str | None = None,
+    element_id: str | None = None,
+    frame: str | None = None,
+    full_page: bool = False,
+    format: str = "png",
+    path: str | None = None,
+) -> list:
+    """截取当前标签页、指定 iframe 或特定元素的图片（支持视口/整页截取）。
+
+    返回 [提示文本, ImageContent 图片块]，多模态客户端可直接肉眼查看。
+
+    Args:
+        tab_id: 标签页 id，省略时用最新激活标签页
+        locator: 元素定位符，指定时截取该元素（如 '#graph', '.ant-table', 'tag:div@@text():采购订单'）
+        element_id: 由 find_element 返回的已登记元素 id
+        frame: 目标 iframe（'active'=激活模块 iframe / 序号 / id / name）
+        full_page: 是否截取整页滚动区域（仅对页面生效，截取元素时忽略）
+        format: 图片格式，支持 'png' 或 'jpeg'（默认 'png'）
+        path: 本地保存文件路径（可选，指定时额外落盘保存）
+    """
+    fmt = "jpeg" if format.strip().lower() in ("jpg", "jpeg") else "png"
+
+    if element_id:
+        ele = manager.get_element(element_id)
+        raw_bytes = ele.get_screenshot(as_bytes=fmt)
+        target_desc = f"元素 [id={element_id}]"
+    elif locator:
+        tab, _ = manager.get_tab(tab_id)
+        ele, _ = manager.search(tab, locator, frame=frame)
+        raw_bytes = ele.get_screenshot(as_bytes=fmt)
+        target_desc = f"元素 [{locator}]"
+    elif frame:
+        tab, _ = manager.get_tab(tab_id)
+        frame_obj = manager.resolve_frame(tab, frame)
+        if frame_obj is tab:
+            raw_bytes = tab.get_screenshot(as_bytes=fmt, full_page=full_page)
+            target_desc = f"标签页 [{tab.title or tab.tab_id}] {'(整页)' if full_page else '视口'}"
+        else:
+            raw_bytes = frame_obj.get_screenshot(as_bytes=fmt)
+            target_desc = f"iframe [{frame}]"
+    else:
+        tab, _ = manager.get_tab(tab_id)
+        raw_bytes = tab.get_screenshot(as_bytes=fmt, full_page=full_page)
+        target_desc = f"标签页 [{tab.title or tab.tab_id}] {'(整页)' if full_page else '视口'}"
+
+    if not raw_bytes:
+        raise ToolError(f"截图失败，未获得图像数据: {target_desc}")
+
+    save_msg = ""
+    if path:
+        try:
+            save_path = Path(path).expanduser()
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_bytes(raw_bytes)
+            save_msg = f"（已保存至 {save_path}）"
+        except OSError as exc:
+            raise ToolError(f"保存截图文件失败: {exc}") from exc
+
+    desc = f"截图成功: {target_desc}（大小: {len(raw_bytes):,} 字节，格式: {fmt}）{save_msg}"
+    return [desc, Image(data=raw_bytes, format=fmt)]

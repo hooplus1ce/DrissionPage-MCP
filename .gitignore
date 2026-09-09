@@ -40,5 +40,9 @@ htmlcov/
 .zcode/
 dom_snapshot/
 
+# 本地账号档案与登录态缓存（含明文凭据/会话 cookie，切勿提交）
+profiles.toml
+.dpmcp/
+
 # Local client config
 .mcp.json
