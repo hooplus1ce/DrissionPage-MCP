@@ -498,7 +498,7 @@ def click_node(
 
 PALETTE_ALIASES = {
     "审批人": ["审批人", "approver", "user", "审批节点"],
-    "判断节点": ["判断节点", "判断", "gateway", "condition", "exclusiveGateway", "x判断", "x判断节点", "x\n判断节点"],
+    "判断节点": ["判断节点", "判断", "gateway", "condition", "exclusiveGateway", "x判断", "x判断节点", "x\n判断节点", "分支", "分支节点", "branch"],
     "并行节点": ["并行节点", "并行", "parallel", "parallelGateway", "+并行", "+并行节点", "+\n并行节点"],
     "开始节点": ["开始节点", "开始", "start"],
     "结束节点": ["结束节点", "结束", "end"],
@@ -639,19 +639,26 @@ def add_node(
         )
     except Exception:
         pass
-    update_cursor_pos(session.tab, nudge_x, nudge_y, down=True)
-    time.sleep(0.04)
+    # 3. 启动真 60/144 FPS 浏览器级 requestAnimationFrame 平滑滑行（由浏览器内核与 GPU 调度，零 WebSocket 延迟）
+    glide_duration = 0.75  # 750ms
+    try:
+        session.tab.run_js(
+            "if (window.__dp_cursor_glide) window.__dp_cursor_glide(arguments[0], arguments[1], arguments[2], 'cubic');",
+            dst_x,
+            dst_y,
+            int(glide_duration * 1000),
+        )
+    except Exception:
+        pass
 
-    # 60 FPS 连续步进插值平滑物理拖拽轨迹，驱动浏览器原生拖拽与虚拟光标同步滑入画布（约800ms平稳滑行）
-    steps = 40
-    dx = dst_x - nudge_x
-    dy = dst_y - nudge_y
-    for s in range(1, steps + 1):
-        t = s / steps
-        ease = 3 * t * t - 2 * t * t * t  # 物理阻尼平滑曲线
-        cx = nudge_x + dx * ease
-        cy = nudge_y + dy * ease
-        update_cursor_pos(session.tab, cx, cy, down=True)
+    # 伴随滑行期间以约 120ms 间隔低频采样派发 CDP mouseMoved，保持底层拖拽管道通畅且绝不造成 WebSocket 线程堵塞跳帧
+    cdp_steps = 6
+    for s in range(1, cdp_steps + 1):
+        time.sleep(glide_duration / cdp_steps)
+        t = s / cdp_steps
+        ease = 3 * t * t - 2 * t * t * t
+        cx = nudge_x + (dst_x - nudge_x) * ease
+        cy = nudge_y + (dst_y - nudge_y) * ease
         try:
             session.tab._run_cdp(
                 "Input.dispatchMouseEvent",
@@ -663,9 +670,8 @@ def add_node(
             )
         except Exception:
             pass
-        time.sleep(0.02)
 
-    time.sleep(0.12)
+    time.sleep(0.08)
     try:
         session.tab._run_cdp(
             "Input.dispatchMouseEvent",
