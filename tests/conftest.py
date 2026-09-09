@@ -140,7 +140,7 @@ class FakeTab:
     def close(self, others=False):
         self.steps.append(("close", others))
 
-    def run_js(self, script, as_expr=False, **kwargs):
+    def run_js(self, script, *args, as_expr=False, **kwargs):
         self.steps.append(("run_js", script))
         return "js-ok"
 

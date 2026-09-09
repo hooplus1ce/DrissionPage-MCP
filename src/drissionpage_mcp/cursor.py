@@ -291,6 +291,23 @@ def act_cursor(target: Any, action: str, x: float | None = None, y: float | None
     except Exception:
         pass
 
+def update_cursor_pos(target: Any, x: float, y: float, down: bool = False, ripple: bool = False) -> None:
+    """直接更新虚拟光标视口绝对坐标与按压状态。"""
+    if not is_cursor_enabled():
+        return
+    tab = _resolve_top_tab(target)
+    if tab is None:
+        return
+    try:
+        ensure_cursor_installed(tab)
+        down_str = "true" if down else "false"
+        rip_str = "true" if ripple else "false"
+        tab.run_js(
+            f"if (window.__dp_cursor_update) window.__dp_cursor_update({float(x):.1f}, {float(y):.1f}, {down_str}, {rip_str});"
+        )
+    except Exception:
+        pass
+
 
 def hide_cursor(target: Any) -> None:
     """强制隐藏虚拟光标。"""

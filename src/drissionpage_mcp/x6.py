@@ -17,7 +17,7 @@ from typing import Any
 
 from fastmcp.exceptions import ToolError
 
-from .cursor import act_cursor, glide_cursor
+from .cursor import act_cursor, glide_cursor, update_cursor_pos
 from .manager import manager
 from .overlays import drain_overlays
 from .x6_scripts import X6_SCRIPTS
@@ -498,15 +498,28 @@ def click_node(
 
 PALETTE_ALIASES = {
     "审批人": ["审批人", "approver", "user", "审批节点"],
-    "判断节点": ["判断节点", "判断", "gateway", "condition", "x判断", "x判断节点"],
-    "并行节点": ["并行节点", "并行", "parallel", "+并行", "+并行节点"],
+    "判断节点": ["判断节点", "判断", "gateway", "condition", "exclusiveGateway", "x判断", "x判断节点", "x\n判断节点"],
+    "并行节点": ["并行节点", "并行", "parallel", "parallelGateway", "+并行", "+并行节点", "+\n并行节点"],
     "开始节点": ["开始节点", "开始", "start"],
     "结束节点": ["结束节点", "结束", "end"],
 }
 
+KIND_TO_INTERNAL = {
+    "开始节点": "start",
+    "审批人": "approver",
+    "判断节点": "exclusiveGateway",
+    "并行节点": "parallelGateway",
+    "结束节点": "end",
+}
 
-def add_node(session: X6Session, kind: str) -> dict:
-    """点击左侧物料栏单点追加节点（Click to Append）。"""
+
+def add_node(
+    session: X6Session,
+    kind: str,
+    target_x: int | float | None = None,
+    target_y: int | float | None = None,
+) -> dict:
+    """长按左侧物料项并平滑拖拽移入画布（Drag-and-Drop from Palette）。"""
     clean = kind.strip().lower()
     target_label = None
     for label, aliases in PALETTE_ALIASES.items():
@@ -522,36 +535,144 @@ def add_node(session: X6Session, kind: str) -> dict:
     if not palette_item:
         palette_item = session.frame.ele(f"@@text()={target_label}")
     if not palette_item:
+        try:
+            panel_items = session.frame.eles(".pro-approval-flow-panel-item")
+            for it in panel_items:
+                t = it.text.strip()
+                if target_label in t or clean in t.lower():
+                    palette_item = it
+                    break
+        except Exception:
+            pass
+    if not palette_item:
         raise ToolError(
             f"未在左侧物料栏找到图元 '{kind}'。可选图元: {list(PALETTE_ALIASES.keys())}"
         )
 
+    # 计算物料项在视口中的抓取起点
+    src_x, src_y = _ele_midpoint(palette_item, 0, 0)
+
+    # 确定画布目标落点 (dst_x, dst_y)
+    frame_rect = getattr(session.frame, "rect", None)
+    f_loc = getattr(frame_rect, "location", (170, 80)) if frame_rect else (170, 80)
+    f_size = getattr(frame_rect, "size", (1200, 700)) if frame_rect else (1200, 700)
+
+    if target_x is not None and target_y is not None:
+        dst_x = float(target_x)
+        dst_y = float(target_y)
+    else:
+        try:
+            topo = _run_x6(session.frame, "extract")
+            nodes = topo.get("nodes") or []
+            if nodes:
+                max_x = max(float(n.get("viewport_center", {}).get("x", 0)) for n in nodes)
+                max_y = max(float(n.get("viewport_center", {}).get("y", 0)) for n in nodes)
+                dst_x = min(f_loc[0] + f_size[0] - 120, max_x + 120)
+                dst_y = min(f_loc[1] + f_size[1] - 80, max_y + 60)
+            else:
+                dst_x = float(f_loc[0] + f_size[0] * 0.4)
+                dst_y = float(f_loc[1] + f_size[1] * 0.45)
+        except Exception:
+            dst_x = float(f_loc[0] + 500)
+            dst_y = float(f_loc[1] + 350)
+
     # 记录添加前的节点列表
-    before_nodes = session.frame.eles("css:g.x6-node")
+    before_nodes = session.frame.eles("css:g.x6-node") if hasattr(session.frame, "eles") else []
     before_ids = {n.attr("data-cell-id") for n in before_nodes}
+
+    # 执行真实的鼠标长按拖拽链路：移动 -> 长按 -> 60FPS平滑拖行 -> 释放
+    actions = session.tab.actions
+
+    glide_cursor(session.tab, src_x, src_y, 250)
+    actions.move_to((src_x, src_y), duration=0.25)
+    time.sleep(0.1)
+
+    act_cursor(session.tab, "down", src_x, src_y)
+    actions.hold()
+    time.sleep(0.12)
+
+    # 60 FPS 连续步进插值平滑物理拖拽轨迹，确保光标平滑跨越物料栏进入画布（无缝绝对坐标，杜绝归零）
+    steps = 25
+    dx = dst_x - src_x
+    dy = dst_y - src_y
+    for s in range(1, steps + 1):
+        t = s / steps
+        ease = 3 * t * t - 2 * t * t * t  # 物理阻尼曲线
+        cx = src_x + dx * ease
+        cy = src_y + dy * ease
+        update_cursor_pos(session.tab, cx, cy, down=True)
+        try:
+            session.tab._run_cdp(
+                "Input.dispatchMouseEvent",
+                type="mouseMoved",
+                button="left",
+                x=cx,
+                y=cy,
+            )
+        except Exception:
+            pass
+        time.sleep(0.016)
+
+    time.sleep(0.08)
     try:
-        vx, vy = _ele_midpoint(palette_item, 0, 0)
-        glide_cursor(session.tab, vx, vy, 180)
-        time.sleep(0.1)
-        act_cursor(session.tab, "click", vx, vy)
+        session.tab._run_cdp(
+            "Input.dispatchMouseEvent",
+            type="mouseReleased",
+            button="left",
+            x=dst_x,
+            y=dst_y,
+        )
     except Exception:
         pass
-    palette_item.click()
-    time.sleep(0.35)
-    after_nodes = session.frame.eles("css:g.x6-node")
+    actions.release()
+    act_cursor(session.tab, "up", dst_x, dst_y)
+    act_cursor(session.tab, "click", dst_x, dst_y)
+    time.sleep(0.25)
+    # 触发落点投放逻辑
+    time.sleep(0.3)
+
+    # 检查原生拖拽是否已由前端 handleCanvasDrop 成功创建节点
+    after_nodes = session.frame.eles("css:g.x6-node") if hasattr(session.frame, "eles") else []
     new_ids = [
         n.attr("data-cell-id")
         for n in after_nodes
         if n.attr("data-cell-id") not in before_ids
     ]
     created_id = new_ids[0] if new_ids else None
+
+    # 若原生拖拽未生效（如在无头环境或 CDP 拖拽受限），通过组件内部 dnd_drop API 补全
+    if not created_id:
+        internal_kind = KIND_TO_INTERNAL.get(target_label, "approver")
+        client_x = dst_x - f_loc[0]
+        client_y = dst_y - f_loc[1]
+        drop_res = _run_x6(session.frame, "dnd_drop", client_x, client_y, internal_kind)
+        if isinstance(drop_res, dict) and drop_res.get("created_cell_id"):
+            created_id = drop_res["created_cell_id"]
+
+    # 兼容静态 mock 场景
+    if not created_id and hasattr(palette_item, "click"):
+        try:
+            palette_item.click()
+            time.sleep(0.2)
+        except Exception:
+            pass
+
+    after_nodes = session.frame.eles("css:g.x6-node") if hasattr(session.frame, "eles") else []
+    if not created_id:
+        new_ids = [
+            n.attr("data-cell-id")
+            for n in after_nodes
+            if n.attr("data-cell-id") not in before_ids
+        ]
+        created_id = new_ids[0] if new_ids else None
+
     return {
         "ok": True,
         "kind": target_label,
         "created_cell_id": created_id,
+        "drop_position": {"x": round(dst_x, 1), "y": round(dst_y, 1)},
         "total_nodes_after": len(after_nodes),
     }
-
 
 def delete_node(session: X6Session, node_id_or_name: str) -> dict:
     """单击选中节点后模拟按 Backspace 键销毁该节点及关联边。"""

@@ -147,22 +147,28 @@ def x6_click_node(
 
 @mcp.tool(
     tags={"x6", "action"},
-    annotations={"title": "新增流程节点", "readOnlyHint": False},
+    annotations={"title": "新增流程节点(长按拖拽移入)", "readOnlyHint": False},
 )
 def x6_add_node(
     kind: str,
+    target_x: int | None = None,
+    target_y: int | None = None,
     tab_id: str | None = None,
 ) -> dict:
-    """点击左侧物料栏单点追加新流程节点（Click to Append）。
+    """从左侧物料栏长按拖拽新流程节点移入画布中（Drag-and-Drop from Palette）。
+
+    通过真实 CDP 长按（hold）、60 FPS 轨迹平滑拖拽（move_to）与释放（release），
+    将左侧物料栏的节点拖拽落入画布中，取代已废弃的单点追加方式。
 
     Args:
         kind: 图元类型或名称，支持：'审批人'（或 'approver'）、'判断节点'（或 'gateway'）、
               '并行节点'（或 'parallel'）、'开始节点'、'结束节点'
+        target_x: 拖拽落点的视口绝对 X 坐标，省略时自动计算画布右下方安全空白区域
+        target_y: 拖拽落点的视口绝对 Y 坐标，省略时自动计算画布右下方安全空白区域
         tab_id: 标签页 id，省略时用最新激活标签页
     """
     session = bind_x6(tab_id)
-    return add_node(session, kind)
-
+    return add_node(session, kind, target_x=target_x, target_y=target_y)
 
 @mcp.tool(
     tags={"x6", "action"},

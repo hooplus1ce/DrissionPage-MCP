@@ -155,7 +155,48 @@ return JSON.stringify({
 });
 """
 
+DND_DROP = r"""
+var clientX = arguments[0];
+var clientY = arguments[1];
+var kind = arguments[2];
+
+var divs = document.querySelectorAll('div');
+var comp = null;
+divs.forEach(function(d) {
+  var key = Object.keys(d).find(function(k) { return k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'); });
+  var fiber = key ? d[key] : null;
+  var cur = fiber;
+  while (cur && !comp) {
+    if (cur.stateNode && cur.stateNode.addNodeInternal) {
+      comp = cur.stateNode;
+      break;
+    }
+    cur = cur.return;
+  }
+});
+
+if (!comp) return JSON.stringify({ ok: false, reason: 'component-not-found' });
+
+var pos = { x: 300, y: 300 };
+if (comp.graph && typeof comp.graph.clientToLocal === 'function') {
+  var local = comp.graph.clientToLocal({ x: clientX, y: clientY });
+  pos = {
+    x: 10 * Math.round(local.x / 10),
+    y: 10 * Math.round(local.y / 10)
+  };
+}
+
+var newId = comp.addNodeInternal(kind, pos);
+return JSON.stringify({
+  ok: true,
+  created_cell_id: newId,
+  position: pos,
+  total_nodes: comp.data ? comp.data.nodes.length : null
+});
+"""
+
 X6_SCRIPTS = {
     "bind": BIND_X6,
     "extract": EXTRACT_GRAPH,
+    "dnd_drop": DND_DROP,
 }

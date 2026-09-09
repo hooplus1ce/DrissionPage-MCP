@@ -185,13 +185,14 @@ async def test_x6_click_node(client, x6_seeded):
 
 
 async def test_x6_add_node(client, x6_seeded):
-    """测试从左侧物料栏单点追加节点。"""
-    _, _, _, frame = x6_seeded
-    res = await client.call_tool("x6_add_node", {"kind": "审批人"})
+    """测试从左侧物料栏长按拖拽追加节点。"""
+    _, _, tab, frame = x6_seeded
+    res = await client.call_tool("x6_add_node", {"kind": "审批人", "target_x": 600, "target_y": 400})
     assert res.data["ok"] is True
     assert res.data["kind"] == "审批人"
-    frame.palette_items["审批人"].click.assert_called_once()
-
+    assert res.data["drop_position"] == {"x": 600.0, "y": 400.0}
+    assert any(c[0] == "hold" for c in tab.actions.calls)
+    assert any(c[0] == "release" for c in tab.actions.calls)
 
 async def test_x6_delete_node(client, x6_seeded):
     """测试选中节点并发送 Backspace 删除，响应标注 deleted_via 删除路径。"""
