@@ -124,6 +124,23 @@ mcp: FastMCP = FastMCP(
     lifespan=app_lifespan,
 )
 
+# 挂载 skills 技能提供者（FastMCP Skills 规范，通过 skill:// 协议暴露）
+from fastmcp.server.context import Context
+from fastmcp.server.providers.skills import SkillsDirectoryProvider
+from fastmcp.server.transforms import ResourcesAsTools
+
+_skills_dir = Path(__file__).resolve().parent.parent.parent / "skills"
+if _skills_dir.is_dir():
+    mcp.add_provider(
+        SkillsDirectoryProvider(
+            roots=_skills_dir,
+            reload=True,
+            supporting_files="resources",
+        )
+    )
+
+# 资源转工具（允许纯 Tool 客户端通过 list_resources 和 read_resource 消费 skills 技能）
+mcp.add_transform(ResourcesAsTools(mcp))
 from .tools import (  # noqa: E402
     account,
     action,
@@ -133,11 +150,11 @@ from .tools import (  # noqa: E402
     element,
     frame,
     navigate,
+    scenario,
     snapshot,
     vtable,
     x6,
 )
-
 for _sub in (
     browser.mcp,
     navigate.mcp,
@@ -149,9 +166,37 @@ for _sub in (
     account.mcp,
     auth.mcp,
     snapshot.mcp,
+    scenario.mcp,
     x6.mcp,
 ):
     mcp.mount(_sub)
+# ---------- 搜索转换器（可选开启，当工具很多时大幅节省 Token） ----------
+
+ENABLE_TOOL_SEARCH = os.getenv("ENABLE_TOOL_SEARCH", "false").lower() in ("1", "true", "yes")
+
+if ENABLE_TOOL_SEARCH:
+    from fastmcp.server.transforms.search import BM25SearchTransform
+
+    _ALWAYS_VISIBLE_TOOLS = [
+        "profile_open",
+        "profile_close",
+        "nav_menu",
+        "click",
+        "element_input",
+        "antd_select",
+        "screenshot",
+        "wait_message",
+        "vtable_inspect",
+        "scenario_run",
+        "list_resources",
+        "read_resource",
+    ]
+    mcp.add_transform(
+        BM25SearchTransform(
+            always_visible=_ALWAYS_VISIBLE_TOOLS,
+            max_results=5,
+        )
+    )
 
 # ---------- 底层开发者工具管控（默认对 AI 隐藏 run_js，避免模型跑偏） ----------
 
@@ -161,14 +206,18 @@ DEV_TOOLS: set[str] = {"run_js"}
 ENABLE_RUN_JS = os.getenv("ENABLE_RUN_JS", "false").lower() in ("1", "true", "yes")
 
 if not ENABLE_RUN_JS:
-    mcp.disable(names=DEV_TOOLS)
+    mcp.disable(tags={"dev"})
 
 
 @mcp.tool(
     tags={"system", "security"},
     annotations={"title": "临时解锁开发者工具", "readOnlyHint": False},
 )
-def enable_dev_tool(name: str, user_explicit_instruction: str) -> str:
+async def enable_dev_tool(
+    name: str,
+    user_explicit_instruction: str,
+    ctx: Context | None = None,
+) -> str:
     """仅在用户明确指令要求执行底层脚本或底层调试时，临时解锁被隐藏的开发者工具（如 'run_js'）。
 
     【安全规范】常规 UI 自动化测试（点击、输入、下拉选择、表格操作、拖拽排序列等）严禁申请解锁此工具！
@@ -185,7 +234,13 @@ def enable_dev_tool(name: str, user_explicit_instruction: str) -> str:
     if not user_explicit_instruction or not user_explicit_instruction.strip():
         raise ToolError("必须提供用户明确要求调用底层工具的指令内容作为授权凭证。")
 
-    mcp.enable(names={clean_name})
+    if ctx:
+        try:
+            await ctx.enable_components(tags={"dev"})
+        except Exception:
+            pass
+
+    mcp.enable(tags={"dev"})
     return f"已临时解锁工具 [{clean_name}]。完成该项操作后必须调用 disable_dev_tool 重新锁定。"
 
 
@@ -193,7 +248,7 @@ def enable_dev_tool(name: str, user_explicit_instruction: str) -> str:
     tags={"system", "security"},
     annotations={"title": "重新锁定开发者工具", "readOnlyHint": False},
 )
-def disable_dev_tool(name: str = "run_js") -> str:
+async def disable_dev_tool(name: str = "run_js", ctx: Context | None = None) -> str:
     """重新锁定底层开发者工具，将其从可用工具列表中移除，避免污染后续常规 UI 自动化测试。
 
     Args:
@@ -203,9 +258,137 @@ def disable_dev_tool(name: str = "run_js") -> str:
     if clean_name not in DEV_TOOLS:
         raise ToolError(f"未受管控的开发者工具: '{clean_name}'，支持管控的工具: {sorted(DEV_TOOLS)}")
 
-    mcp.disable(names={clean_name})
-    return f"已锁定并隐藏工具 [{clean_name}]。"
+    if ctx:
+        try:
+            await ctx.disable_components(tags={"dev"})
+        except Exception:
+            pass
 
+    mcp.disable(tags={"dev"})
+    return f"已锁定并隐藏工具 [{clean_name}]。"
+# ---------- 业务场景特性套件（按需插拔，降低 Token 消耗） ----------
+
+SUPPORTED_FEATURES: set[str] = {"x6", "vtable"}
+
+FEATURE_SUITES: dict[str, set[str]] = {
+    "x6": {
+        "x6_nodes",
+        "x6_fit",
+        "x6_move_node",
+        "x6_connect",
+        "x6_click_node",
+        "x6_add_node",
+        "x6_delete_node",
+    },
+    "vtable": {
+        "vtable_inspect",
+        "vtable_find_cell",
+        "vtable_click_cell",
+    },
+}
+
+_DISABLED_FEATURE_NAMES: set[str] = set()
+
+
+def enable_feature_internal(name: str) -> bool:
+    clean = name.strip().lower()
+    if clean not in SUPPORTED_FEATURES:
+        return False
+    mcp.enable(tags={clean})
+    _DISABLED_FEATURE_NAMES.discard(clean)
+    return True
+
+
+def disable_feature_internal(name: str) -> bool:
+    clean = name.strip().lower()
+    if clean not in SUPPORTED_FEATURES:
+        return False
+    mcp.disable(tags={clean})
+    _DISABLED_FEATURE_NAMES.add(clean)
+    return True
+
+
+def enable_all_features() -> None:
+    for f in SUPPORTED_FEATURES:
+        enable_feature_internal(f)
+
+
+def _init_features() -> None:
+    raw = os.getenv("DISABLED_FEATURES", "x6").strip()
+    if raw:
+        for f in raw.split(","):
+            clean = f.strip().lower()
+            if clean in SUPPORTED_FEATURES:
+                disable_feature_internal(clean)
+
+
+_init_features()
+
+
+@mcp.tool(
+    tags={"system", "feature"},
+    annotations={"title": "启用场景特性套件", "readOnlyHint": False},
+)
+async def enable_feature(name: str, ctx: Context | None = None) -> str:
+    """按需启用特定业务场景的工具套件（如进入审批流设计页面启用 'x6'，进入大数据表格启用 'vtable'）。
+
+    Args:
+        name: 特性套件名称，支持 'x6'（流程图 7 个工具）、'vtable'（表格 3 个工具）
+    """
+    clean_name = name.strip().lower()
+    if clean_name not in SUPPORTED_FEATURES:
+        available = "、".join(sorted(SUPPORTED_FEATURES))
+        raise ToolError(f"未知的特性套件 [{name}]，可用套件：{available}")
+
+    if ctx:
+        try:
+            await ctx.enable_components(tags={clean_name})
+        except Exception:
+            pass
+
+    enable_feature_internal(clean_name)
+    count = len(FEATURE_SUITES.get(clean_name, []))
+    return f"已启用特性套件 [{clean_name}]（解锁 {count} 个专属工具）。"
+
+
+@mcp.tool(
+    tags={"system", "feature"},
+    annotations={"title": "禁用场景特性套件", "readOnlyHint": False},
+)
+async def disable_feature(name: str, ctx: Context | None = None) -> str:
+    """离开特定业务场景后禁用工具套件，减少向模型暴露的 Schema Token 开销。
+
+    Args:
+        name: 特性套件名称，支持 'x6'、'vtable'
+    """
+    clean_name = name.strip().lower()
+    if clean_name not in SUPPORTED_FEATURES:
+        available = "、".join(sorted(SUPPORTED_FEATURES))
+        raise ToolError(f"未知的特性套件 [{name}]，可用套件：{available}")
+
+    if ctx:
+        try:
+            await ctx.disable_components(tags={clean_name})
+        except Exception:
+            pass
+
+    disable_feature_internal(clean_name)
+    return f"已禁用特性套件 [{clean_name}]，降低上下文 Token 消耗。"
+
+
+@mcp.tool(
+    tags={"system", "feature"},
+    annotations={"title": "查看特性套件状态", "readOnlyHint": True},
+)
+def list_features() -> dict:
+    """查看所有场景特性套件的启用/禁用状态及其包含的工具列表。"""
+    return {
+        suite: {
+            "enabled": suite not in _DISABLED_FEATURE_NAMES,
+            "tools": sorted(list(tools)),
+        }
+        for suite, tools in sorted(FEATURE_SUITES.items())
+    }
 
 def main() -> None:
     parser = argparse.ArgumentParser(

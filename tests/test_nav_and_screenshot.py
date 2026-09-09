@@ -173,3 +173,61 @@ async def test_nav_menu_item_not_found_raises(client, seeded_manager):
     tab.ele_results["css:.ant-select-dropdown"] = dropdown
     with pytest.raises(ToolError, match="未找到名称包含"):
         await client.call_tool("nav_menu", {"menu_name": "不存在的菜单"})
+
+
+# ==========================================
+# D3: wait_message 单测
+# ==========================================
+
+
+async def test_wait_message_matched_antd_message(client, seeded_manager):
+    _session, _chromium, tab = seeded_manager
+    msg_ele = FakeElement("div", text="保存成功")
+    msg_ele.attrs["class"] = "ant-message-notice ant-message-notice-success"
+    tab.eles_results["css:.ant-message-notice"] = [msg_ele]
+
+    res = await client.call_tool("wait_message", {"pattern": "保存.*", "timeout": 1.0})
+    data = res.data
+    assert data.found is True
+    assert data.matched_text == "保存成功"
+    assert data.source == "message"
+    assert data.level == "success"
+    assert "保存成功" in data.all_messages
+
+
+async def test_wait_message_matched_notification(client, seeded_manager):
+    _session, _chromium, tab = seeded_manager
+    notif_ele = FakeElement("div", text="审批驳回提醒：预算超出限制")
+    notif_ele.attrs["class"] = "ant-notification-notice ant-notification-notice-error"
+    tab.eles_results["css:.ant-notification-notice"] = [notif_ele]
+
+    res = await client.call_tool("wait_message", {"pattern": "驳回|超限", "timeout": 1.0})
+    data = res.data
+    assert data.found is True
+    assert "审批驳回提醒" in data.matched_text
+    assert data.source == "notification"
+    assert data.level == "error"
+
+
+async def test_wait_message_timeout_raises_tool_error(client, seeded_manager):
+    _session, _chromium, tab = seeded_manager
+    tab.eles_results[".ant-message-notice"] = []
+    tab.eles_results[".ant-notification-notice"] = []
+
+    with pytest.raises(ToolError, match="未等到匹配"):
+        await client.call_tool("wait_message", {"pattern": "绝对不会出现的文本", "timeout": 0.5})
+
+
+async def test_wait_message_raise_false_returns_found_false(client, seeded_manager):
+    _session, _chromium, tab = seeded_manager
+    tab.eles_results[".ant-message-notice"] = []
+    tab.eles_results[".ant-notification-notice"] = []
+
+    res = await client.call_tool(
+        "wait_message",
+        {"pattern": "找不到的消息", "timeout": 0.5, "raise_if_not_found": False},
+    )
+    data = res.data
+    assert data.found is False
+    assert data.matched_text is None
+    assert data.all_messages == []

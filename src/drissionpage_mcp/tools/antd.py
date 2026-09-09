@@ -13,7 +13,7 @@ import time
 from fastmcp.exceptions import ToolError
 
 from ..manager import has_box, manager, normalize_locator, real_click
-from ..models import MessageResult, ToastResult
+from ..models import MessageMatchResult, MessageResult, ToastResult
 from ..overlays import arm_overlays, drain_overlays
 from fastmcp import FastMCP
 
@@ -70,6 +70,158 @@ def get_toasts(tab_id: str | None = None, frame: str | None = None) -> ToastResu
     except Exception:
         pass
     return ToastResult(message_texts=messages, notification_texts=notifications)
+
+
+def _collect_messages(tab, frame: str | None = None) -> list[tuple[str, str, str | None]]:
+    """收集当前可见的全局消息项：[(text, source, level), ...]
+
+    性能优化：在轮询等待期只做即时 DOM 探测（timeout=0），不走冗长的 frame 重建重试。
+    """
+    results: list[tuple[str, str, str | None]] = []
+
+    containers = []
+    try:
+        root = _resolve_search_root(tab, frame)
+        containers.append(root)
+        if root is not tab:
+            containers.append(tab)
+    except Exception:
+        containers = [tab]
+
+    for container in containers:
+        # 1. AntD message 气泡
+        try:
+            nodes = container.eles("css:.ant-message-notice", timeout=0)
+            for n in nodes or []:
+                try:
+                    if not getattr(n.states, "is_displayed", True):
+                        continue
+                    txt = (n.text or "").strip()
+                    if not txt:
+                        continue
+                    cls = (n.attr("class") or "").lower()
+                    lvl = "info"
+                    if "success" in cls:
+                        lvl = "success"
+                    elif "error" in cls:
+                        lvl = "error"
+                    elif "warn" in cls:
+                        lvl = "warning"
+                    results.append((txt[:200], "message", lvl))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # 2. AntD notification
+        try:
+            nodes = container.eles("css:.ant-notification-notice", timeout=0)
+            for n in nodes or []:
+                try:
+                    if not getattr(n.states, "is_displayed", True):
+                        continue
+                    txt = (n.text or "").strip()
+                    if not txt:
+                        continue
+                    cls = (n.attr("class") or "").lower()
+                    lvl = "info"
+                    if "success" in cls:
+                        lvl = "success"
+                    elif "error" in cls:
+                        lvl = "error"
+                    elif "warn" in cls:
+                        lvl = "warning"
+                    results.append((txt[:200], "notification", lvl))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # 3. 旧版 layui-layer-msg
+        try:
+            nodes = container.eles("css:.layui-layer-msg .layui-layer-content", timeout=0)
+            for n in nodes or []:
+                try:
+                    if not getattr(n.states, "is_displayed", True):
+                        continue
+                    txt = (n.text or "").strip()
+                    if txt:
+                        results.append((txt[:200], "layer", None))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    return results
+
+
+@mcp.tool(
+    tags={"antd", "assert"},
+    annotations={"title": "等待操作提示气泡或通知", "readOnlyHint": True},
+)
+def wait_message(
+    pattern: str = r".+",
+    timeout: float = 5.0,
+    tab_id: str | None = None,
+    frame: str | None = None,
+    raise_if_not_found: bool = True,
+) -> MessageMatchResult:
+    """轮询等待全局操作结果气泡或通知出现并断言内容（如 '保存成功'、'操作失败'）。
+
+    支持 AntD Message 全局提示气泡、Notification 通知卡片、Modal 提示及旧版
+    layui-layer 弹窗消息。捕获到符合正则的内容后立即返回（无须多余等待）。
+
+    Args:
+        pattern: 正则表达式或关键字，如 "保存成功"、"成功|完成"、"失败|错误"（默认 r".+" 捕获任意消息）
+        timeout: 等待的最长秒数（默认 5.0 秒）
+        tab_id: 标签页 id，省略时用最新标签页
+        frame: 搜索范围（'active'=激活态 iframe，默认优先当前激活模块并穿透）
+        raise_if_not_found: 超时未匹配时是否抛出 ToolError（默认 True；False 则返回 found=False 的结果模型）
+    """
+    clean_pat = (pattern or "").strip() or r".+"
+    try:
+        regex = re.compile(clean_pat, re.IGNORECASE)
+    except re.error as exc:
+        raise ToolError(f"非法的正则表达式: {pattern!r} ({exc})") from exc
+
+    tab, _ = manager.get_tab(tab_id)
+    deadline = time.time() + max(timeout, 0.5)
+    start_time = time.time()
+    seen_messages: list[str] = []
+
+    while time.time() < deadline:
+        entries = _collect_messages(tab, frame)
+        for msg_text, source, level in entries:
+            if msg_text not in seen_messages:
+                seen_messages.append(msg_text)
+            if regex.search(msg_text):
+                return MessageMatchResult(
+                    found=True,
+                    pattern=pattern,
+                    matched_text=msg_text,
+                    source=source,
+                    level=level,
+                    elapsed_seconds=round(time.time() - start_time, 2),
+                    all_messages=seen_messages,
+                )
+        time.sleep(0.2)
+
+    elapsed = round(time.time() - start_time, 2)
+    if raise_if_not_found:
+        captured_str = "、".join(repr(m) for m in seen_messages) or "（未捕捉到任何消息气泡）"
+        raise ToolError(
+            f"在 {elapsed}s 内未等到匹配 [{pattern}] 的操作结果气泡。当前捕获到的消息: {captured_str}"
+        )
+
+    return MessageMatchResult(
+        found=False,
+        pattern=pattern,
+        matched_text=None,
+        source=None,
+        level=None,
+        elapsed_seconds=elapsed,
+        all_messages=seen_messages,
+    )
 
 
 def _open_dropdown(tab, ele, root, dd_loc: str, timeout: float):

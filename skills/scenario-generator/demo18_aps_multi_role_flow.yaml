@@ -1,0 +1,61 @@
+name: demo18_aps_multi_role_flow
+description: demo18 APS 平台多角色鉴权、模块路由与视觉核验完整回归流程
+
+steps:
+  - step: 1. 打开管理员会话（自动注入 Token 登录态）
+    tool: profile_open
+    args:
+      profile: aps
+    expect:
+      status_ok: true
+
+  - step: 2. 管理员直达采购订单模块
+    tool: nav_menu
+    args:
+      menu_name: 采购订单
+      tab_id: ${tab_id}
+    expect:
+      status_ok: true
+
+  - step: 3. 截取管理员采购订单模块视图
+    tool: screenshot
+    args:
+      tab_id: ${tab_id}
+      path: .dpmcp/verify/scenario_po_shot.png
+
+  - step: 4. 打开审批人会话（独立 BrowserContext 隔离）
+    tool: profile_open
+    args:
+      profile: aps_approver
+    expect:
+      status_ok: true
+
+  - step: 5. 审批人直达产线管理模块
+    tool: nav_menu
+    args:
+      menu_name: 产线管理
+      tab_id: ${tab_id}
+    expect:
+      status_ok: true
+
+  - step: 6. 验证消息断言机制（无异常消息）
+    tool: wait_message
+    args:
+      tab_id: ${tab_id}
+      pattern: 无此异常消息气泡
+      timeout: 0.5
+      raise_if_not_found: false
+
+  - step: 7. 关闭审批人会话
+    tool: profile_close
+    args:
+      profile: aps_approver
+    expect:
+      status_ok: true
+
+  - step: 8. 关闭管理员会话
+    tool: profile_close
+    args:
+      profile: aps
+    expect:
+      status_ok: true

@@ -204,3 +204,40 @@ class NavMenuResult(BaseModel):
     active_frame: dict | None = None
     reused_tab: bool = False
     message: str | None = None
+
+
+class MessageMatchResult(BaseModel):
+    """全局消息/弹层断言结果。"""
+
+    found: bool
+    pattern: str
+    matched_text: str | None = None
+    source: str | None = Field(default=None, description="来源：message / notification / layer 等")
+    level: str | None = Field(default=None, description="级别：success / error / warning / info")
+    elapsed_seconds: float = 0.0
+    all_messages: list[str] = Field(default_factory=list, description="轮询期间捕捉到的所有消息文本")
+
+
+class ScenarioStepResult(BaseModel):
+    """场景执行的单步结果。"""
+
+    index: int
+    step: str
+    tool: str
+    ok: bool
+    elapsed_seconds: float = 0.0
+    output_summary: str | None = None
+    error: str | None = None
+
+
+class ScenarioRunResult(BaseModel):
+    """声明式场景回归运行结果。"""
+
+    ok: bool
+    name: str
+    total_steps: int
+    passed_steps: int
+    elapsed_seconds: float = 0.0
+    failed_step: str | None = None
+    steps: list[ScenarioStepResult] = Field(default_factory=list)
+    variables: dict[str, str] = Field(default_factory=dict)

@@ -6,7 +6,7 @@ import time
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-
+from fastmcp.server.context import Context
 from ..manager import manager, normalize_locator, prepare_locator
 from ..models import (
     HtmlResult,
@@ -196,11 +196,12 @@ def get_page_html(tab_id: str | None = None, max_chars: int = 20_000) -> HtmlRes
     tags={"navigate", "menu"},
     annotations={"title": "导航功能模块", "readOnlyHint": False},
 )
-def nav_menu(
+async def nav_menu(
     menu_name: str,
     tab_id: str | None = None,
     force_reload: bool = False,
     timeout: float = 15.0,
+    ctx: Context | None = None,
 ) -> NavMenuResult:
     """在 APS 管理后台中按菜单名一键导航直达功能模块。
 
@@ -358,6 +359,18 @@ def nav_menu(
     # 4. 获取最新页面信息（包括面包屑）
     info = get_page_info(tab.tab_id)
 
+    # 自动按业务场景激活匹配的特性套件（优先当前会话上下文激活 x6）
+    if any(k in clean_name for k in ("审批流", "流程", "设计", "flow", "x6")):
+        if ctx:
+            try:
+                await ctx.enable_components(tags={"x6"})
+            except Exception:
+                pass
+        try:
+            from ..server import enable_feature_internal
+            enable_feature_internal("x6")
+        except Exception:
+            pass
     return NavMenuResult(
         ok=True,
         menu_name=clean_name,

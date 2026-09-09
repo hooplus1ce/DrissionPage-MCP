@@ -536,3 +536,14 @@ def run_smoke():
     if os.environ.get("DPMCP_SMOKE") != "1":
         pytest.skip("设置 DPMCP_SMOKE=1 以运行真浏览器冒烟测试")
     return True
+
+
+@pytest.fixture(autouse=True)
+def _ensure_all_features_for_tests():
+    """测试环境下默认放开所有特性套件，避免用例受到生产环境 Token 优化隐藏的影响。"""
+    try:
+        from drissionpage_mcp.server import enable_all_features
+
+        enable_all_features()
+    except Exception:
+        pass

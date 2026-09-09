@@ -373,6 +373,7 @@ def click(
         "element_id": element_id,
         "double": double,
         "button": button,
+        "by_js": by_js,
     }
     if pt is not None:
         res["clicked"] = {"x": round(pt[0], 1), "y": round(pt[1], 1)}

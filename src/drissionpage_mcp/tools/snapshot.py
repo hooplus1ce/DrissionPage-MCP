@@ -168,11 +168,19 @@ def screenshot(
         target_desc = f"元素 [id={element_id}]"
     elif locator:
         tab, _ = manager.get_tab(tab_id)
+        try:
+            tab.set.activate()
+        except Exception:
+            pass
         ele, _ = manager.search(tab, locator, frame=frame)
         raw_bytes = ele.get_screenshot(as_bytes=fmt)
         target_desc = f"元素 [{locator}]"
     elif frame:
         tab, _ = manager.get_tab(tab_id)
+        try:
+            tab.set.activate()
+        except Exception:
+            pass
         frame_obj = manager.resolve_frame(tab, frame)
         if frame_obj is tab:
             raw_bytes = tab.get_screenshot(as_bytes=fmt, full_page=full_page)
@@ -182,9 +190,12 @@ def screenshot(
             target_desc = f"iframe [{frame}]"
     else:
         tab, _ = manager.get_tab(tab_id)
+        try:
+            tab.set.activate()
+        except Exception:
+            pass
         raw_bytes = tab.get_screenshot(as_bytes=fmt, full_page=full_page)
         target_desc = f"标签页 [{tab.title or tab.tab_id}] {'(整页)' if full_page else '视口'}"
-
     if not raw_bytes:
         raise ToolError(f"截图失败，未获得图像数据: {target_desc}")
 

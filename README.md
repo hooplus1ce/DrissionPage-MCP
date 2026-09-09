@@ -71,9 +71,12 @@ uv run python -m drissionpage_mcp --transport http --port 8000
 }
 ```
 
-## 工具一览（精简至 54 个）
+## 工具一览（精简收敛与按需插拔）
 
-经过冗余裁剪与领域收敛（剔除重复原子操作、下线低频调试工具、VTable 17 个碎片收敛为 3 个核心工具），大幅降低 LLM 调用的 Token 开销与工具决策幻觉。底层脚本工具 `run_js` 默认禁用且对客户端隐藏（运行时经 `enable_dev_tool` 临时解锁）。
+经过冗余裁剪、VTable 收敛及场景特性按需插拔，大幅降低向大模型暴露的 Schema Token 开销：
+- **全特性解锁总计 59 个工具**；
+- **默认模式（DISABLED_FEATURES=x6）仅暴露 52 个工具**（X6 流程图工具默认对 AI 隐藏，当调用 `nav_menu("审批流配置")` 时自动激活解锁）；
+- 另可通过 `DISABLED_FEATURES=x6,vtable` 进一步将普通页面常驻工具压至 49 个。
 
 | 分组 | 工具 | 说明 |
 |---|---|---|
@@ -85,11 +88,12 @@ uv run python -m drissionpage_mcp --transport http --port 8000
 | 账号档案/登录 (6) | `profile_list` `auth_captcha` `auth_login` `profile_open` `profile_close` `auth_session_clear` | 档案级鉴权：多模态读验证码、令牌注入、多角色并行会话 |
 | iframe (1) | `frame_list` | 功能模块 iframe 清单（所有定位工具均支持 `frame` 参数） |
 | 真实交互 (2) | `action_chain` `press_key` | CDP Input 级别物理鼠标轨迹拖拽/复杂按键序列 |
-| AntD 弹层 (4) | `antd_select` `antd_date_pick` `antd_modal_click` `get_toasts` | 兼容旧版类名；下拉多选自动 ESC 收回防遮挡；气泡断言 |
+| AntD 弹层/消息断言 (5) | `antd_select` `antd_date_pick` `antd_modal_click` `get_toasts` `wait_message` | 自动 ESC 收回防遮挡；`wait_message` 极速轮询全局气泡与断言 |
 | 页面快照 (2) | `screenshot` `page_controls` | `screenshot` 回传多模态图片内容块；`page_controls` 紧凑控件列表 |
 | VTable 表格 (3) | `vtable_inspect` `vtable_find_cell` `vtable_click_cell` | 3 大核心能力：全功能多粒度快照、搜文本、点击格/图标 |
-| X6 流程图 (7) | `x6_nodes` `x6_fit` `x6_move_node` `x6_connect` `x6_click_node` `x6_add_node` `x6_delete_node` | 审批流画布拓扑、拖拽加节点、连线、双击配置、物理删除 |
-| 管控 (2) | `enable_dev_tool` `disable_dev_tool` | 临时解锁/重新锁定 `run_js` |
+| X6 流程图 (7) | `x6_nodes` `x6_fit` `x6_move_node` `x6_connect` `x6_click_node` `x6_add_node` `x6_delete_node` | 审批流画布拓扑、拖拽加节点、连线、双击配置、物理删除（可按需插拔） |
+| 场景回归 (1) | `scenario_run` | 声明式 YAML/JSON 回归测试运行器，支持变量插值与连续断言 |
+| 管控与特性 (5) | `enable_feature` `disable_feature` `list_features` `enable_dev_tool` `disable_dev_tool` | 场景特性套件动态插拔与开发者工具管控 |
 
 ### 会话模型
 
@@ -146,6 +150,45 @@ profile_open(profile="aps")          → 复用同一 context_id/tab_id 并注�
 - 登录 HTTP 走标准库 `urllib`（零新增依赖）；接口路径、字段名、成功判据、令牌字段均可在
   档案中覆盖，换环境（如 demo18 → 其他前缀）只需改 `HL_HOST_PREFIX` 或对应字段。
 
+### 声明式场景回归 (scenario_run)
+
+为了将大模型在复杂多角色流（如采购下单、会签/或签审批流）中的探索成果沉淀为确定性、零 Token 消耗的回归资产，服务提供了声明式场景执行引擎：
+
+- **YAML/JSON 步骤编排**：有序调用 MCP 工具序列，支持入参 `${tab_id}`、`${context_id}` 等变量动态插值与 `save` 字段抽取；
+- **连续断言与快速熔断**：支持 `status_ok` 状态校验与 `message_contains` 气泡内容匹配，遇到断言失败时立即熔断并精确定位；
+- **调用方式**：
+  - AI 指令：`scenario_run(scenario="scenarios/demo18_aps_multi_role_flow.yaml")`（支持省略目录直接传文件名）
+  - 离线回放：`async with Client(mcp) as c: await c.call_tool("scenario_run", {"scenario": ...})`
+- 详细语法规范、变量系统与多角色实战范例参见 [scenarios/README.md](scenarios/README.md)。
+
+### 技能知识库与资源转工具（Skills Provider & ResourcesAsTools）
+
+服务遵循 FastMCP 官方 [Skills 体系规范](https://fastmcp.wiki/zh/servers/providers/skills) 与 [ResourcesAsTools 规范](https://fastmcp.wiki/zh/servers/transforms/resources-as-tools)：
+
+1. **原生技能协议 (`skill://`)**：
+   - **`skill://scenario-generator/SKILL.md`**：指导大模型自动生成兼容本服务的声明式回归场景（YAML/JSON）的完整规范与避坑法则；
+   - **`skill://aps-data-permission/SKILL.md`**：APS 数据权限与数据范围表配置及实机双浏览器端到端测试 SOP；
+   - **`skill://filter-vtable-audit/SKILL.md`**：列表筛选区与 VTable 业务列一致性审查指南与禅道 BUG 模板；
+   - **`skill://scenario-generator/demo18_aps_multi_role_flow.yaml`**：双角色完整协同回归基准范例。
+2. **无缝工具桥接（资源转工具）**：
+   - 自动生成 `list_resources` 与 `read_resource` 两个标准工具（自带 `readOnlyHint: true`）；
+   - **即使连接仅支持 Tool 协议而不支持 Resource 协议的 MCP 客户端，Agent 依然能通过调用 `read_resource(uri="skill://...")` 直接学习和遵循技能规范！**
+
+### 原生 Tags 特性套件与会话隔离（Per-Session Visibility）
+
+服务基于 FastMCP 原生 [组件可见性体系](https://fastmcp.wiki/zh/servers/visibility) 重构了特性套件管理：
+- **原生 Tag 标记**：X6 工具打上 `tags={"x6"}`，VTable 打上 `tags={"vtable"}`，底层脚本打上 `tags={"dev"}`；
+- **会话级无害激活**：`nav_menu("审批流配置")` 与 `enable_feature("x6")` 优先在当前请求上下文（`ctx.enable_components`）中激活，**仅对当前对话会话暴露 X6 专属工具，不污染并发的其他普通表单测试会话**；
+- **极致精简常态**：默认隐藏 X6（7 个工具），常驻工具压制在 54 个以内；离开特定场景后调用 `disable_feature` 自动收缩。
+
+### 工具搜索转换器（BM25 Tool Search，可选开启）
+
+针对上下文窗口极其受限或希望将 Schema Token 消耗压制到极限的模型客户端，服务内置了 FastMCP [工具搜索机制](https://fastmcp.wiki/zh/servers/transforms/tool-search)：
+- **启动方式**：环境变量设置 `ENABLE_TOOL_SEARCH=true`；
+- **效果**：
+  - 初始仅暴露 **12 个核心黄金工具**（`profile_open`, `profile_close`, `nav_menu`, `click`, `element_input`, `antd_select`, `screenshot`, `wait_message`, `vtable_inspect`, `scenario_run`, `list_resources`, `read_resource`）以及 2 个合成工具（`search_tools`, `call_tool`）；
+  - **Schema Token 消耗瞬间降低约 75%**；
+  - 其余 40+ 底层工具支持大模型通过自然语言在 `search_tools` 中实时语义发现并无缝调用。
 ### 面向 iframe 微前端的适配
 
 功能模块以 iframe 挂载时，服务自动保证元素可交互性：默认检索优先**激活态（可见）iframe**，

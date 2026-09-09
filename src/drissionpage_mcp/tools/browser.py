@@ -137,7 +137,7 @@ def tab_close(tab_id: str | None = None, others: bool = False) -> MessageResult:
     return MessageResult(ok=True, message=f"已关闭标签页 {tab.tab_id}")
 
 @mcp.tool(
-    tags={"browser", "tab", "advanced"},
+    tags={"browser", "tab", "advanced", "dev"},
     annotations={"title": "执行 JS (默认隐藏)", "readOnlyHint": False},
 )
 def run_js(script: str, tab_id: str | None = None, as_expr: bool = False) -> object:

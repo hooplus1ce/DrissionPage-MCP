@@ -19,12 +19,11 @@ async def test_server_lists_expected_tools(client):
         "tab_new",
         "tab_list",
         "tab_close",
-        "tab_info",
         "enable_dev_tool",
         "disable_dev_tool",
         "navigate",
+        "nav_menu",
         "navigate_back",
-        "navigate_forward",
         "refresh",
         "wait_element",
         "get_page_info",
@@ -32,11 +31,9 @@ async def test_server_lists_expected_tools(client):
         "find_element",
         "find_elements",
         "element_info",
-        "element_click",
+        "click",
         "element_input",
         "element_hover",
-        "element_select",
-        "element_check",
         "element_scroll",
         "context_new",
         "context_close",
@@ -44,6 +41,7 @@ async def test_server_lists_expected_tools(client):
         "cookies_get",
         "cookies_set",
         "cookies_clear",
+        "screenshot",
     }
     assert expected <= names
     assert "run_js" not in names
@@ -114,7 +112,7 @@ async def test_find_and_click_element(client, seeded_manager):
     assert found.data.tag == "button"
     assert found.data.text == "提交"
 
-    clicked = await client.call_tool("element_click", {"element_id": element_id})
+    clicked = await client.call_tool("click", {"target": element_id})
     assert clicked.data["ok"] is True
     assert ("click", ele, 1) in tab.actions.calls
 
@@ -180,16 +178,8 @@ async def test_element_input_hover_check_select_scroll(client, seeded_manager):
     await client.call_tool("element_hover", {"element_id": eid})
     assert ("hover",) in ele.actions
 
-    await client.call_tool("element_check", {"element_id": eid, "checked": False})
-    assert ("check", False) in ele.actions
-
-    await client.call_tool("element_select", {"element_id": eid, "by": "text", "value": "选项"})
     await client.call_tool("element_scroll", {"element_id": eid, "action": "down", "pixel": 100})
     assert ("scroll_down", 100) in ele.actions
-
-    with pytest.raises(ToolError, match="by 参数"):
-        await client.call_tool("element_select", {"element_id": eid, "by": "bad", "value": "x"})
-
 
 async def test_find_elements(client, seeded_manager):
     _, _, tab = seeded_manager
@@ -212,7 +202,7 @@ async def test_stale_element_error(client, seeded_manager):
     found = await client.call_tool("find_element", {"locator": "#btn1"})
     ele.alive = False
     with pytest.raises(ToolError, match="已失效"):
-        await client.call_tool("element_click", {"element_id": found.data.element_id})
+        await client.call_tool("click", {"target": found.data.element_id})
 
 
 async def test_tab_lifecycle_and_run_js(client, seeded_manager):
@@ -362,8 +352,8 @@ async def test_unified_click(client, seeded_manager):
     assert res_dbl.data["double"] is True
 
 
-async def test_element_click_without_action(client, seeded_manager):
-    """use_action=False 走元素自带点击（ele.click），不经过 Actions 链。"""
+async def test_element_click_with_js(client, seeded_manager):
+    """by_js=True 走元素自带点击或 JS 点击。"""
     _, _, tab = seeded_manager
     btn = FakeElement(tag="button", text="保 存")
     tab.ele_result = btn
@@ -371,8 +361,6 @@ async def test_element_click_without_action(client, seeded_manager):
     found = await client.call_tool("find_element", {"locator": "text:保 存", "frame": "main"})
     eid = found.data.element_id
 
-    res = await client.call_tool("element_click", {"element_id": eid, "use_action": False})
+    res = await client.call_tool("click", {"target": eid, "by_js": True})
     assert res.data["ok"] is True
-    assert res.data["by_action"] is False
-    assert ("click", False) in btn.actions  # 元素自带点击被调用
-    assert not any(c[0] == "click" for c in tab.actions.calls)  # 未走 Actions 真实鼠标链
+    assert res.data["by_js"] is True
