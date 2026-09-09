@@ -187,6 +187,42 @@ async def test_vtable_read_cells_limit(client, vtable_seeded):
         )
 
 
+async def test_vtable_read_cells_byte_guard(client, vtable_seeded):
+    """病态长文本格：超 64KB 时按 UTF-8 字节截断，并同步 maxRow 供位置映射。"""
+    _, _, _, vt_frame = vtable_seeded
+    big = "汉" * 300  # 单格 900 字节
+    rows = [[big] for _ in range(100)]
+    vt_frame.responses["read"] = json.dumps(
+        {"minCol": 0, "minRow": 1, "maxCol": 0, "maxRow": 100, "values": rows},
+        ensure_ascii=False,
+    )
+    result = await client.call_tool(
+        "vtable_read_cells", {"col0": 0, "row0": 1, "col1": 0, "row1": 100}
+    )
+    data = result.data
+    assert data["truncated"] is True
+    assert 0 < len(data["values"]) < len(rows)
+    assert data["truncated_rows"] == len(rows) - len(data["values"])
+    assert data["maxRow"] == data["minRow"] + len(data["values"]) - 1
+    assert data["values"][0] == [big]  # 保留行内容不裁剪
+
+    # 单行本身就超限：保留该行并压缩格文本，而不是返回空矩阵
+    vt_frame.responses["read"] = json.dumps(
+        {"minCol": 0, "minRow": 0, "maxCol": 0, "maxRow": 0,
+         "values": [[big * 100]]},
+        ensure_ascii=False,
+    )
+    single = await client.call_tool(
+        "vtable_read_cells", {"col0": 0, "row0": 0, "col1": 0, "row1": 0}
+    )
+    sd = single.data
+    assert sd["truncated"] is True
+    assert sd["truncated_rows"] == 0
+    assert sd["truncated_cells"] == 1
+    assert len(sd["values"]) == 1
+    assert len(sd["values"][0][0].encode("utf-8")) <= 65536
+
+
 async def test_vtable_find_cell(client, vtable_seeded):
     _, _, _, vt_frame = vtable_seeded
     vt_frame.responses["find"] = json.dumps(
@@ -195,6 +231,18 @@ async def test_vtable_find_cell(client, vtable_seeded):
     )
     result = await client.call_tool("vtable_find_cell", {"text": "生和堂"})
     assert result.data["matches"][0]["row"] == 5
+
+
+async def test_vtable_find_cell_clamp_and_truncated(client, vtable_seeded):
+    """max_results 钳到 100，且 truncated 标志如实透传（不再恒为 false）。"""
+    _, _, _, vt_frame = vtable_seeded
+    vt_frame.responses["find"] = json.dumps(
+        {"matches": [{"col": 0, "row": 1, "value": "x"}],
+         "scanned": {"colCount": 20, "rowCount": 89}, "truncated": True}
+    )
+    result = await client.call_tool("vtable_find_cell", {"text": "x", "max_results": 500})
+    assert result.data["truncated"] is True
+    assert vt_frame.js_calls[-1][1][-1] == 100  # 传入 JS 的 max_results 被钳制
 
 
 async def test_vtable_cell_info_coords(client, vtable_seeded):
@@ -495,6 +543,24 @@ async def test_overlays_omitted_when_empty(client, vtable_seeded):
     assert "overlays" not in result.data
 
 
+async def test_vtable_click_selection_compact(client, vtable_seeded):
+    """点击响应的选区为紧凑摘要：无 origin/title，value 截断 80 字符。"""
+    _, _, tab, vt_frame = vtable_seeded
+    vt_frame.responses["selection"] = json.dumps(
+        {"ranges": [{"start": {"col": 3, "row": 5}, "end": {"col": 3, "row": 5}}],
+         "cells": [{"col": 3, "row": 5, "field": "order_no", "title": "申请单号",
+                     "value": "x" * 120, "origin": {"id": 1, "remark": "长" * 200}}]}
+    )
+    result = await client.call_tool("vtable_click_cell", {"col": 3, "row": 5})
+    cells = result.data["selection"]["cells"]
+    assert len(cells) == 1
+    assert cells[0]["field"] == "order_no"
+    assert len(cells[0]["value"]) == 80
+    assert "origin" not in cells[0]
+    assert "title" not in cells[0]
+    assert result.data["selection"]["ranges"] is not None
+
+
 async def test_action_chain_humanized_typing(client, vtable_seeded):
     """type 未给 interval 时使用 30~90ms 随机拟人间隔；显式 interval 优先。"""
     _, _, tab, _ = vtable_seeded
@@ -609,16 +675,7 @@ async def test_vtable_inspect_column_by_title(client, vtable_seeded):
             }
         ],
         "cells": [
-            {
-                "row": 1,
-                "text": "IOR001",
-                "bg_color": None,
-                "text_color": "#1890ff",
-                "interactive": True,
-                "bounds": {"x": 110, "y": 40, "width": 180, "height": 30},
-                "center": {"x": 200, "y": 55},
-                "blank_point": {"x": 282, "y": 55},
-            }
+            {"row": 1, "text": "IOR001", "interactive": True}
         ],
     }
     result = await client.call_tool("vtable_inspect", {"col": "申请单号"})
@@ -631,7 +688,8 @@ async def test_vtable_inspect_column_by_title(client, vtable_seeded):
     assert data["header_icons"][0]["function"] == "dropdown"
     assert data["header_icons"][0]["center"] == {"x": 290.0, "y": 232.0}
     assert len(data["cells"]) == 1
-    assert data["cells"][0]["blank_point"] == {"x": 294.0, "y": 267.0}
+    assert data["cells"][0] == {"row": 1, "text": "IOR001", "interactive": True}
+    assert "center" not in data["cells"][0]  # 省 token：列感知无逐格几何
 
 
 async def test_vtable_inspect_row(client, vtable_seeded):
@@ -644,19 +702,7 @@ async def test_vtable_inspect_row(client, vtable_seeded):
         "height": 35,
         "bg_color": "#fff1f0",  # 警告高亮行
         "cells": [
-            {
-                "col": 0,
-                "field": "id",
-                "title": "ID",
-                "text": "3",
-                "bg_color": "#fff1f0",
-                "text_color": "#333333",
-                "interactive": False,
-                "bounds": {"x": 0, "y": 100, "width": 50, "height": 35},
-                "center": {"x": 25, "y": 117.5},
-                "blank_point": {"x": 42, "y": 117.5},
-                "icons": [],
-            }
+            {"col": 0, "field": "id", "title": "ID", "text": "3", "interactive": False}
         ],
     }
     result = await client.call_tool("vtable_inspect", {"row": 3})
@@ -666,12 +712,14 @@ async def test_vtable_inspect_row(client, vtable_seeded):
     assert data["height"] == 35
     assert data["bg_color"] == "#fff1f0"
     assert len(data["cells"]) == 1
-    assert data["cells"][0]["center"] == {"x": 37.0, "y": 329.5}
-    assert data["cells"][0]["bounds"]["viewport_x"] == 12.0
+    assert data["cells"][0]["text"] == "3"
+    assert data["cells"][0]["field"] == "id"
+    assert data["cells"][0]["interactive"] is False
+    assert "center" not in data["cells"][0]  # 省 token：行感知无逐格几何/颜色/图标
 
 
 async def test_vtable_inspect_range(client, vtable_seeded):
-    """区域切片感知：返回指定矩形矩阵并计算出直接供 action_chain 拖选的 drag_start 和 drag_end。"""
+    """区域切片感知：文本矩阵 values + 拖选锚点，颜色/交互态稀疏返回。"""
     _, _, tab, vt_frame = vtable_seeded
     vt_frame.responses["inspect"] = {
         "bound": True,
@@ -680,26 +728,10 @@ async def test_vtable_inspect_range(client, vtable_seeded):
         "row_range": [1, 3],
         "drag_start": {"x": 100, "y": 50},
         "drag_end": {"x": 300, "y": 150},
-        "cells": [
-            [
-                {
-                    "col": 1,
-                    "row": 1,
-                    "text": "A1",
-                    "bounds": {"x": 50, "y": 30, "width": 60, "height": 30},
-                    "center": {"x": 80, "y": 45},
-                    "blank_point": {"x": 100, "y": 45},
-                },
-                {
-                    "col": 2,
-                    "row": 1,
-                    "text": "B1",
-                    "bounds": {"x": 110, "y": 30, "width": 60, "height": 30},
-                    "center": {"x": 140, "y": 45},
-                    "blank_point": {"x": 160, "y": 45},
-                },
-            ]
-        ],
+        "values": [["A1", "B1"], ["A2", "B2"]],
+        "styles": [[1, 1, None, "#1890ff"]],
+        "interactive": [[2, 1]],
+        "baseline_style": ["#ffffff", "#333333"],
     }
     result = await client.call_tool(
         "vtable_inspect", {"col_range": [1, 2], "row_range": [1, 3]}
@@ -708,7 +740,20 @@ async def test_vtable_inspect_range(client, vtable_seeded):
     assert data["scope"] == "range"
     assert data["drag_start"] == {"x": 112.0, "y": 262.0}
     assert data["drag_end"] == {"x": 312.0, "y": 362.0}
-    assert data["cells"][0][0]["center"] == {"x": 92.0, "y": 257.0}
+    assert data["values"] == [["A1", "B1"], ["A2", "B2"]]
+    assert data["styles"] == [[1, 1, None, "#1890ff"]]
+    assert data["interactive"] == [[2, 1]]
+    assert data["baseline_style"] == ["#ffffff", "#333333"]  # 基线显式回传
+
+
+async def test_vtable_inspect_range_too_large(client, vtable_seeded):
+    """区域切片超 500 格时本地预检直接拒绝（省 token 闸门，不走 JS）。"""
+    _, _, tab, vt_frame = vtable_seeded
+    with pytest.raises(ToolError, match="超出 500 格上限"):
+        await client.call_tool(
+            "vtable_inspect", {"col_range": [0, 100], "row_range": [0, 100]}
+        )
+    assert all(name != "inspect" for name, _ in vt_frame.js_calls)
 
 
 async def test_vtable_inspect_visible_all(client, vtable_seeded):

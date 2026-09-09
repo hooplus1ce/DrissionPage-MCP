@@ -62,11 +62,21 @@ class ElementDetail(ElementSummary):
     rect: dict[str, float] | None = None
     # 非复选框元素的 is_checked 等状态为 None，因此值允许为空
     states: dict[str, bool | None] | None = None
+    truncated_fields: list[str] | None = Field(
+        default=None,
+        description="被截断的字段名列表（省 token 默认截断；无截断时为 null，full=True 可恢复）",
+    )
 
 
 class ElementListResult(BaseModel):
     count: int
     elements: list[ElementSummary]
+    total: int | None = Field(
+        default=None, description="匹配元素总数；大于 count 时说明被 limit 截断"
+    )
+    truncated: bool | None = Field(
+        default=None, description="是否因 limit 截断；未截断时为 null"
+    )
 
 
 class ContextInfo(BaseModel):

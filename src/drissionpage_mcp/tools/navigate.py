@@ -181,14 +181,15 @@ def get_page_info(tab_id: str | None = None) -> PageInfo:
     tags={"page"},
     annotations={"title": "页面 HTML", "readOnlyHint": True},
 )
-def get_page_html(tab_id: str | None = None, max_chars: int = 100_000) -> HtmlResult:
-    """获取标签页当前页面的完整 HTML（不含 iframe 内部内容），超长时截断。
+def get_page_html(tab_id: str | None = None, max_chars: int = 20_000) -> HtmlResult:
+    """获取标签页当前页面的 HTML（不含 iframe 内部内容），超长时截断。
 
     Args:
         tab_id: 标签页 id，省略时用最新标签页
-        max_chars: 返回 HTML 的最大字符数，超出部分截断
+        max_chars: 返回 HTML 的最大字符数（默认 20000，硬上限 50000），超出部分截断
     """
     tab, _ = manager.get_tab(tab_id)
+    max_chars = min(max_chars, 50_000)
     html = tab.html or ""
     truncated = len(html) > max_chars
     if truncated:

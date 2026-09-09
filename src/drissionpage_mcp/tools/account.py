@@ -14,6 +14,10 @@ from fastmcp import FastMCP
 # 领域子服务器：由 server.py mount 组合（官方 composition 模式）
 mcp = FastMCP("Account")
 
+# cookies_get 字段白名单（省 token：value 是迁移登录态的用途本身必须保留，
+# 砍掉 session/size/priority 等噪声字段）
+COOKIE_FIELDS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
+
 
 @mcp.tool(
     tags={"account"},
@@ -60,7 +64,11 @@ def cookies_get(tab_id: str | None = None) -> CookieList:
     """
     tab, _ = manager.get_tab(tab_id)
     cookies = tab.cookies(all_info=True)
-    return CookieList(count=len(cookies), cookies=[dict(c) for c in cookies])
+    slim = [
+        {k: d.get(k) for k in COOKIE_FIELDS if d.get(k) is not None}
+        for d in (dict(c) for c in cookies)
+    ]
+    return CookieList(count=len(cookies), cookies=slim)
 
 
 @mcp.tool(

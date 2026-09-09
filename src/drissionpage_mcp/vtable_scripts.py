@@ -180,17 +180,23 @@ var colCount = num(t.colCount) || 0;
 var rowCount = num(t.rowCount) || 0;
 var headerRows = num(t.columnHeaderLevelCount) || num(t.headerRowCount) || 1;
 var matches = [];
-for (var row = headerRows; row < rowCount && matches.length < maxResults; row++) {
-  for (var col = 0; col < colCount && matches.length < maxResults; col++) {
+var truncated = false;
+outer:
+for (var row = headerRows; row < rowCount; row++) {
+  for (var col = 0; col < colCount; col++) {
     var v = null;
     try { v = t.getCellValue(col, row); } catch (e) { continue; }
     if (v === null || v === undefined) continue;
     var s = typeof v === 'object' ? JSON.stringify(v) : String(v);
     var hit = exact ? s.trim() === want : s.indexOf(want) >= 0;
-    if (hit) matches.push({ col: col, row: row, value: s.slice(0, 120) });
+    if (hit) {
+      // 多扫一格用于判断"是否还有更多匹配"，让 truncated 说真话
+      if (matches.length >= maxResults) { truncated = true; break outer; }
+      matches.push({ col: col, row: row, value: s.slice(0, 120) });
+    }
   }
 }
-return JSON.stringify({ matches: matches, scanned: { colCount: colCount, rowCount: rowCount - headerRows }, truncated: false });
+return JSON.stringify({ matches: matches, scanned: { colCount: colCount, rowCount: rowCount - headerRows }, truncated: truncated });
 """
 
 # ---------------------------------------------------------------------------
@@ -446,7 +452,9 @@ try {
             for (var k in c.originData) {
               if (origin && Object.keys(origin).length >= 12) break;
               var v = c.originData[k];
-              if (v === null || v === undefined || typeof v !== 'object') origin[k] = v;
+              if (v === null || v === undefined || typeof v !== 'object') {
+                origin[k] = (typeof v === 'string' && v.length > 120) ? v.slice(0, 120) : v;
+              }
             }
           }
         } catch (e2) {}
@@ -985,17 +993,8 @@ if (target_col !== null && target_row === null) {
     var cNode = getCellNode(target_col, r);
     var cText = extractCellText(cNode, target_col, r);
     var cStyle = extractCellStyle(cNode, target_col, r);
-    var cGeo = getCellBounds(target_col, r, cNode);
-    cells.push({
-      row: r,
-      text: cText,
-      bg_color: cStyle.bg_color,
-      text_color: cStyle.text_color,
-      interactive: cStyle.interactive,
-      bounds: cGeo.box,
-      center: cGeo.center,
-      blank_point: cGeo.blank_point
-    });
+    // 省 token：列感知的逐行格只留文本与交互态，几何/颜色由点击类工具现算
+    cells.push({ row: r, text: cText, interactive: cStyle.interactive });
   }
   return JSON.stringify({
     bound: true,
@@ -1031,18 +1030,13 @@ if (target_row !== null && target_col === null) {
       var def = t.getBodyColumnDefine ? t.getBodyColumnDefine(c, headerRows) : null;
       if (def) { field = String(def.field || def.key || ''); title = String(def.title || def.header || ''); }
     } catch (e2) {}
+    // 省 token：行感知的逐列格只留列映射与文本，颜色/几何走 hover_cell/cell_state
     rowCells.push({
       col: c,
       field: field,
       title: title,
       text: cText,
-      bg_color: cStyle.bg_color,
-      text_color: cStyle.text_color,
-      interactive: cStyle.interactive,
-      bounds: cGeo.box,
-      center: cGeo.center,
-      blank_point: cGeo.blank_point,
-      icons: extractCellIcons(cNode)
+      interactive: cStyle.interactive
     });
   }
   return JSON.stringify({
@@ -1076,32 +1070,60 @@ if (col_range !== null || row_range !== null) {
   if (c0 > c1) { var tc = c0; c0 = c1; c1 = tc; }
   if (r0 > r1) { var tr = r0; r0 = r1; r1 = tr; }
 
+  // 省 token 格数闸门：区域切片仅用于"看清区域 + 拿框选锚点"，超限直接拒绝
+  // （错误消息 ~50 token，比返回大矩阵划算得多）
+  var MAX_RANGE_CELLS = 500;
+  if ((c1 - c0 + 1) * (r1 - r0 + 1) > MAX_RANGE_CELLS) {
+    return JSON.stringify({
+      bound: true,
+      scope: "range",
+      error: "range-too-large",
+      maxCells: MAX_RANGE_CELLS,
+      requestedCols: c1 - c0 + 1,
+      requestedRows: r1 - r0 + 1
+    });
+  }
+
   var startCell = getCellNode(c0, r0);
   var startGeo = getCellBounds(c0, r0, startCell);
   var endCell = getCellNode(c1, r1);
   var endGeo = getCellBounds(c1, r1, endCell);
 
-  var cells = [];
+  // 省 token 稀疏化：values 为纯文本矩阵；颜色以"出现最多的配色"为基线，只列偏离项。
+  // 不硬编码白/黑（scenegraph fill 的拼写与主题各异，硬编码会让稀疏化整体失效）；
+  // 基线显式回传 baseline_style，调用方据此区分"基线色"与"未返回颜色"。
+  var values = [];
+  var allStyles = [];
+  var interactive = [];
+  var styleCount = {};
+  var stylePairs = {};
   for (var r = r0; r <= r1; r++) {
     var rowList = [];
     for (var c = c0; c <= c1; c++) {
       var cNode = getCellNode(c, r);
       var cText = extractCellText(cNode, c, r);
       var cStyle = extractCellStyle(cNode, c, r);
-      var cGeo = getCellBounds(c, r, cNode);
-      rowList.push({
-        col: c,
-        row: r,
-        text: cText,
-        bg_color: cStyle.bg_color,
-        text_color: cStyle.text_color,
-        interactive: cStyle.interactive,
-        bounds: cGeo.box,
-        center: cGeo.center,
-        blank_point: cGeo.blank_point
-      });
+      rowList.push(cText);
+      var bg = cStyle.bg_color === undefined ? null : cStyle.bg_color;
+      var fg = cStyle.text_color === undefined ? null : cStyle.text_color;
+      allStyles.push([c, r, bg, fg]);
+      var styleKey = String(bg).toLowerCase() + '|' + String(fg).toLowerCase();
+      styleCount[styleKey] = (styleCount[styleKey] || 0) + 1;
+      if (!stylePairs[styleKey]) stylePairs[styleKey] = [bg, fg];
+      if (cStyle.interactive) interactive.push([c, r]);
     }
-    cells.push(rowList);
+    values.push(rowList);
+  }
+  var baselineKey = null;
+  var baselineCount = 0;
+  for (var bk in styleCount) {
+    if (styleCount[bk] > baselineCount) { baselineCount = styleCount[bk]; baselineKey = bk; }
+  }
+  var styles = [];
+  for (var si = 0; si < allStyles.length; si++) {
+    var entry = allStyles[si];
+    var entryKey = String(entry[2]).toLowerCase() + '|' + String(entry[3]).toLowerCase();
+    if (entryKey !== baselineKey) styles.push(entry);
   }
 
   return JSON.stringify({
@@ -1111,7 +1133,10 @@ if (col_range !== null || row_range !== null) {
     row_range: [r0, r1],
     drag_start: startGeo.blank_point,
     drag_end: endGeo.blank_point,
-    cells: cells
+    baseline_style: baselineKey === null ? null : stylePairs[baselineKey],
+    values: values,
+    styles: styles,
+    interactive: interactive
   });
 }
 

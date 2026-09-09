@@ -30,6 +30,58 @@ from ..vtable import (
     _run,
 )
 
+READ_CELLS_MAX_BYTES = 65536  # read_cells 响应字节级安全网（病态长文本格兜底）
+
+
+def _guard_read_cells_size(data: dict) -> dict:
+    """read_cells 字节级安全网：响应超限时截断尾部行并置 truncated 标志。
+
+    格数上限（2000）防的是"格子太多"，此处防的是"每格文本太长"的病态表
+    （UTF-8 字节数，中文按 3 字节计）。截断总是显式标注
+    （truncated / truncated_rows / truncated_cells），并把 maxRow 同步为实际
+    返回的最后一行，避免调用方按位置映射行时错位。
+    """
+    import json as _json
+
+    def _nbytes(obj: dict) -> int:
+        return len(_json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+
+    def _clip(s: str, max_bytes: int) -> str:
+        raw = s.encode("utf-8")
+        return s if len(raw) <= max_bytes else raw[:max_bytes].decode("utf-8", "ignore")
+
+    if _nbytes(data) <= READ_CELLS_MAX_BYTES:
+        return data
+    rows = data.get("values") or []
+    kept: list = []
+    for r in rows:
+        if _nbytes({**data, "values": kept + [r]}) > READ_CELLS_MAX_BYTES:
+            break
+        kept.append(r)
+    out = {
+        **data,
+        "values": kept,
+        "truncated": True,
+        "truncated_rows": len(rows) - len(kept),
+    }
+    if not kept and rows:
+        # 单行本身就超限：保留该行并把格文本压到预算内，避免"一行都拿不到"
+        row = list(rows[0])
+        budget = max(1, (READ_CELLS_MAX_BYTES - 1024) // max(1, len(row)))
+        clipped = 0
+        for i, cell in enumerate(row):
+            s = cell if isinstance(cell, str) else _json.dumps(cell, ensure_ascii=False)
+            if len(s.encode("utf-8")) > budget:
+                row[i] = _clip(s, budget)
+                clipped += 1
+        kept = [row]
+        out["values"] = kept
+        out["truncated_rows"] = len(rows) - 1
+        out["truncated_cells"] = clipped
+    if kept:
+        out["maxRow"] = data.get("minRow", 0) + len(kept) - 1
+    return out
+
 
 @mcp.tool(
     tags={"vtable"},
@@ -86,7 +138,8 @@ def vtable_read_cells(
     if (abs(col1 - col0) + 1) * (abs(row1 - row0) + 1) > MAX_READ_CELLS:
         raise ToolError(f"单次最多读取 {MAX_READ_CELLS} 格，请缩小范围分页读取")
     session = get_session(tab_id, table_index)
-    return _run(session.frame, "read_cells", col0, row0, col1, row1)
+    data = _run(session.frame, "read_cells", col0, row0, col1, row1)
+    return _guard_read_cells_size(data)
 
 
 @mcp.tool(
@@ -105,12 +158,12 @@ def vtable_find_cell(
     Args:
         text: 要查找的文本
         exact: 是否精确匹配（默认包含匹配）
-        max_results: 最多返回条数
+        max_results: 最多返回条数（硬上限 100；仍有更多匹配时响应 truncated=true）
         tab_id: 标签页 id
         table_index: 表序号（注意：此处为字符串形式的索引，如 "0"）
     """
     session = get_session(tab_id, None if table_index is None else int(table_index))
-    return _run(session.frame, "find_cells", text, exact, max_results)
+    return _run(session.frame, "find_cells", text, exact, min(max(1, max_results), 100))
 
 
 @mcp.tool(
@@ -402,35 +455,24 @@ def vtable_inspect(
     tab_id: str | None = None,
     table_index: int | None = None,
 ) -> dict:
-    """VTable 可视化多粒度快照与交互锚点感知。
+    """VTable 多粒度快照:服务端提取肉眼可见文本/颜色/交互态,坐标自动换算为视口绝对坐标。
 
-    在 MCP 服务端一次性完成肉眼真实文本提取、视觉样式解析（前景色/背景色/可交互性）、
-    列分界线与安全空白拖拽点计算，并自动换算为页面视口绝对坐标，为 action_chain 派发
-    鼠标真实操作提供端到端数据支持。
-
-    支持 5 种自适应调用颗粒度：
-    1. 单单元格模式 (传入 col 与 row)：
-       返回指定单元格肉眼可见文本、前景色、背景色、是否可交互（链接/编辑/指针）、
-       视口绝对外接矩形 bounds、中心点 center、安全空白拖拽点 blank_point 与内部图标列表。
-    2. 单列感知模式 (传入 col 或列名，row 为空)：
-       返回列配置（col、field、title、width）、表头换序拖拽中心点 header_center、
-       表头调列宽右边界线点 border_right、表头图标列表 header_icons 及视口内可见单元格列表。
-       col 参数支持传入列字段名或中文表头标题（智能匹配，不区分大小写）。
-    3. 单行感知模式 (传入 row，col 为空)：
-       返回行背景色 bg_color（用于断言选中态或警示色）、行高 height 及该行所有列单元格紧凑数据。
-    4. 区域切片模式 (传入 col_range=[c0, c1] 或 row_range=[r0, r1])：
-       返回指定区域单元格矩阵，并显式计算出框选起始锚点 drag_start（左上格 blank_point）
-       与结束锚点 drag_end（右下格 blank_point），可直接传给 action_chain 派发 hold+move+release。
-    5. 全表可视快照模式 (全部参数为空)：
-       返回轻量级可视全表骨架（列头清单 + 视口内行矩阵），体积控制在 3~5KB，彻底剔除 SVG 噪音。
+    5 种颗粒度(按传参自动选择):
+    1. cell 模式(col+row): 单格文本/颜色/可交互性 + bounds/center/blank_point/图标。
+    2. column 模式(只传 col 或列名): 列配置 + 表头换序锚点 header_center、调宽线 border_right、
+       表头图标 header_icons,及可见行紧凑文本列表(省 token:无逐格几何)。
+    3. row 模式(只传 row): 行背景色 bg_color、行高 height 及全列紧凑数据(col/field/title/text)。
+    4. range 模式(col_range/row_range): 文本矩阵 values + 框选锚点 drag_start/drag_end,
+       颜色/交互态稀疏返回(styles/interactive 只列偏离项,基线见 baseline_style);上限 500 格,超限报错。
+    5. 全表快照(全空): 列头 + 视口内行紧凑矩阵(3~5KB)。
 
     Args:
-        col: 列序号或列名（支持 field 字段名或 title 中文表头，如 "申请单号"）
-        row: 行序号（含表头，从 0 起）
+        col: 列序号或列名(支持 field 或中文表头,如 "申请单号")
+        row: 行序号(含表头,从 0 起)
         col_range: 列范围 [起始列, 结束列]
         row_range: 行范围 [起始行, 结束行]
-        tab_id: 标签页 id，省略时用最新标签页
-        table_index: 多表页面中第几个 .vtable 容器（从 0 起）
+        tab_id: 标签页 id,省略时用最新标签页
+        table_index: 多表页面中第几个 .vtable 容器(从 0 起)
     """
     session = get_session(tab_id, table_index)
     return inspect_vtable(

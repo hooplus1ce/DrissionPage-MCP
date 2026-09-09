@@ -21,6 +21,7 @@ from .overlays import drain_overlays
 from .vtable_scripts import VTABLE_SCRIPTS
 
 MAX_READ_CELLS = 2000
+MAX_RANGE_CELLS = 500  # vtable_inspect 区域切片格数上限（省 token 闸门）
 
 
 @dataclass
@@ -238,6 +239,29 @@ def cell_state(session: VTableSession, col: int, row: int) -> dict:
     return data
 
 
+def _compact_selection(selection: dict | None) -> dict | None:
+    """点击响应用的紧凑选区摘要。
+
+    cells 仅保留 col/row/field/value≤80（verified 判定只需 col/row）；
+    完整明细（含 originData 业务记录）走 vtable_get_selection。
+    """
+    if not selection:
+        return None
+    cells = []
+    for c in (selection.get("cells") or []):
+        entry = {"col": c.get("col"), "row": c.get("row")}
+        if c.get("field"):
+            entry["field"] = c["field"]
+        v = c.get("value")
+        if v is not None:
+            entry["value"] = str(v)[:80]
+        cells.append(entry)
+    out: dict = {"cells": cells}
+    if selection.get("ranges"):
+        out["ranges"] = selection["ranges"]
+    return out
+
+
 def click_cell(
     session: VTableSession,
     col: int,
@@ -291,7 +315,7 @@ def click_cell(
     result = {
         "clicked": {"x": x, "y": y},
         "cell": info,
-        "selection": selection,
+        "selection": _compact_selection(selection),
         "verified": verified,
         "retries_used": retries_used,
     }
@@ -567,7 +591,29 @@ def inspect_vtable(
     elif col is not None:
         target_col_idx = int(col)
 
+    # 省 token 预检：显式给出两个范围时先本地校验，避免 JS 层大矩阵计算
+    if (
+        col_range is not None
+        and row_range is not None
+        and len(col_range) >= 2
+        and len(row_range) >= 2
+    ):
+        cols = abs(col_range[1] - col_range[0]) + 1
+        rows = abs(row_range[1] - row_range[0]) + 1
+        if cols * rows > MAX_RANGE_CELLS:
+            raise ToolError(
+                f"区域切片超出 {MAX_RANGE_CELLS} 格上限（请求 {cols} 列 × {rows} 行），"
+                "请缩小 col_range/row_range，或用 vtable_read_cells 分页读取"
+            )
+
     data = _run(session.frame, "inspect", target_col_idx, row, col_range, row_range)
+    if data.get("error") == "range-too-large":
+        # JS 侧权威闸门兜底（缺省维度由可见窗口决定，Python 无法预知）
+        raise ToolError(
+            f"区域切片超出 {data.get('maxCells', MAX_RANGE_CELLS)} 格上限"
+            f"（请求 {data.get('requestedCols')} 列 × {data.get('requestedRows')} 行），"
+            "请缩小 col_range/row_range，或用 vtable_read_cells 分页读取"
+        )
     if not data or data.get("bound") is False:
         _require_bound(data, "感知 VTable 状态")
 

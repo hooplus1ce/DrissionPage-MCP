@@ -1,4 +1,4 @@
-"""VTable 工具族真机验证：绑定 → 元数据 → 列头 → 找值 → 坐标 → 点击 → 图标。"""
+"""VTable 工具族真机验证：绑定 → 元数据 → 列头 → 找值 → 坐标 → 区域切片 → 点击 → 图标。"""
 
 import asyncio
 
@@ -61,6 +61,25 @@ async def main() -> None:
         info = r.data
         p("5.坐标", f"({col},{row}) canvas中心={info['box_canvas']} "
                     f"视口中心={info['center_viewport']} inViewport={info['in_viewport']}")
+
+        # 5b. 区域切片感知（range 模式：文本矩阵 + 稀疏样式 + 显式基线 + 框选锚点）
+        r = await call(c, "vtable_inspect", {
+            "col_range": [0, min(2, max(0, len(cols) - 1))], "row_range": [0, 3],
+        })
+        d = r.data
+        assert d["scope"] == "range", d
+        assert d["values"] and isinstance(d["values"][0], list), d
+        assert isinstance(d["styles"], list) and isinstance(d["interactive"], list), d
+        assert "baseline_style" in d, d
+        p("5b.区域切片", f"{len(d['values'])}行×{len(d['values'][0])}列 基线={d.get('baseline_style')} "
+                        f"偏离格={len(d['styles'])} 交互格={len(d['interactive'])} "
+                        f"drag={d['drag_start']}->{d['drag_end']}")
+
+        # 5c. 格数闸门（501 格应被拒绝，而不是返回大矩阵）
+        r_big = await call(c, "vtable_inspect", {
+            "col_range": [0, 500], "row_range": [0, 0],
+        }, required=False)
+        p("5c.闸门", "已拒绝" if r_big is None else f"未拒绝(异常!): {str(r_big.data)[:80]}")
 
         # 6. 真实鼠标点击该单元格（应触发行选中）
         r = await call(c, "vtable_click_cell", {"col": col, "row": row})

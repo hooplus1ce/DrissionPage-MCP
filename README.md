@@ -42,7 +42,7 @@ DrissionPage-MCP/
 │   ├── cursor.py            # Win11 虚拟光标（60FPS 滑行 + 点击涟漪）
 │   ├── overlays.py          # 浮层观察器（arm/drain）
 │   └── models.py            # 输出模型
-└── tests/                   # 103 个单测 + 1 个真浏览器冒烟（DPMCP_SMOKE=1 门控）
+└── tests/                   # 112 个单测 + 1 个真浏览器冒烟（DPMCP_SMOKE=1 门控）
 ```
 
 ## 运行
@@ -147,6 +147,10 @@ uv run pytest                # 单元测试（假对象，不启动浏览器）
 DPMCP_SMOKE=1 uv run pytest tests/test_smoke.py   # 真浏览器冒烟测试（需本机 Chrome）
 ```
 
+`tests/test_vtable_js.py` 用本机 node 直接执行 VTable 的 JS 片段（stub 掉
+scenegraph），覆盖语法与 range 稀疏化/find 截断语义——这部分平时被 fake
+`run_js` 的预置响应掩盖；node 不可用时自动跳过。
+
 ### VTable（canvas 表格）原理
 
 VTable 内容渲染在 canvas 中，DOM 不可见。工具链通过注入 JS 拿到页面里的
@@ -158,12 +162,21 @@ VTable 实例（容器 `__vtable__` 直连 → React Fiber 扫描兜底，绑定
 
 ## 省 token 设计约定
 
-所有工具输出遵循：列表封顶（浮层 4 条、控件 40 项）、文本截断（24~60 字符）、
-**空字段整体省略**（如无浮层时响应不含 overlays 键）。动作类工具内置
-观察→执行→收集流水线（MutationObserver 捕捉动作后的新浮层）；
-`vtable_click_cell` 响应含 verified 标志（目标格是否进入选区，信息性——
-勾选/按钮格与未开点选的表格恒为 False）；`action_chain` 的 type 步骤
-默认拟人键入节奏（30~90ms 随机键间隔）。
+所有工具输出遵循：列表封顶、文本截断、**空字段整体省略**（如无浮层时响应不含
+overlays 键）、**截断必须显式标注**（truncated 标志，模型可补取）。分层原则：
+默认返回决策所需最小集，需要完整数据时通过 full/offset 等参数显式补取。
+
+| 约定 | 说明 |
+|---|---|
+| 浮层 / 控件封顶 | overlays 4 条×60 字符、page_controls 40 项×24 字符 |
+| vtable_inspect 分层 | cell 模式全量；column/row 模式无逐格几何（文本+交互态）；range 模式为文本矩阵 values + 稀疏 styles/interactive（仅偏离基线项，基线见 baseline_style）+ 框选锚点，**上限 500 格**超限报错 |
+| vtable 选区 | `vtable_click_cell` 响应中 selection 为紧凑摘要（col/row/field/value≤80）；完整明细（含 originData≤120/值）走 `vtable_get_selection` |
+| read_cells 双重闸门 | 格数上限 2000 + 响应 64KB 字节级安全网（UTF-8 字节；截断置 truncated/truncated_rows，maxRow 同步为实际末行） |
+| element_info | 默认截断 inner_html≤1000/属性值≤200/value≤500，标注 truncated_fields；`full=True` 放宽（inner_html≤5000、属性值/value 不截断） |
+| 无界参数钳制 | find_elements limit≤200（响应含 total/truncated）、vtable_find_cell≤100（truncated 标注）、get_page_html≤50K（默认 20K）、run_js 输出≤20K |
+| 分页 | `antd_get_options` 单页 50 条 + total/truncated，offset 翻页（antd_select 匹配在服务端，截断不影响选中） |
+| 字段白名单 | cookies_get 仅返回 name/value/domain/path/expires/httpOnly/secure/sameSite；x6 节点 data 值级截断 200 字符 |
+| 其他 | 动作类工具内置观察→执行→收集流水线；action_chain type 拟人键入（30~90ms）；verified 标志（信息性，勾选/按钮格恒 False） |
 
 ## 端到端验证脚本
 

@@ -9,6 +9,8 @@ from fastmcp import FastMCP
 # 领域子服务器：由 server.py mount 组合（官方 composition 模式）
 mcp = FastMCP("Browser")
 
+RUN_JS_OUTPUT_LIMIT = 20_000  # run_js 返回值字符上限（省 token 安全网，截断显式标注）
+
 
 @mcp.tool(
     tags={"browser"},
@@ -151,18 +153,25 @@ def tab_info(tab_id: str | None = None, browser_id: str | None = None) -> TabInf
 def run_js(script: str, tab_id: str | None = None, as_expr: bool = False) -> object:
     """在标签页中执行 JavaScript 并返回结果（可 JSON 序列化的部分）。
 
-    【安全警示】此工具为底层调试逃生通道，默认已对 AI 隐藏并禁用。
-    常规 UI 自动化测试（点击、输入、下拉选择、表格操作、拖拽等）严禁使用此工具！
-    必须优先使用 vtable_*、antd_*、element_*、action_chain 等封装工具。
-    仅在用户明确指示要求执行 JS 时，通过 enable_dev_tool 解锁后调用。
+    【安全警示】底层调试逃生通道，默认已对 AI 隐藏并禁用。常规 UI 自动化
+    （点击/输入/下拉/表格/拖拽等）严禁使用，必须优先用 vtable_*/antd_*/element_*/
+    action_chain 等封装工具。仅当用户明确指示执行 JS 时经 enable_dev_tool 解锁。
 
     Args:
         script: JS 代码；as_expr=False 时作为函数体执行（可用 return），True 时作为表达式求值
         tab_id: 标签页 id，省略时用最新标签页
         as_expr: 是否按表达式求值
+
+    输出超过 20000 字符时截断并标注；需要完整数据请在 JS 内自行裁剪返回。
     """
     tab, _ = manager.get_tab(tab_id)
     result = tab.run_js(script, as_expr=as_expr)
-    if isinstance(result, (str, int, float, bool)) or result is None:
+    if result is None or isinstance(result, (int, float, bool)):
         return result
-    return str(result)
+    s = result if isinstance(result, str) else str(result)
+    if len(s) > RUN_JS_OUTPUT_LIMIT:
+        return (
+            s[:RUN_JS_OUTPUT_LIMIT]
+            + f"\n...[输出截断: 共 {len(s)} 字符，如需完整数据请在 JS 内自行裁剪返回]"
+        )
+    return result

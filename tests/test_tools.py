@@ -142,6 +142,31 @@ async def test_element_info_and_states(client, seeded_manager):
     assert info.data.states["is_displayed"] is True
 
 
+async def test_element_info_truncation_and_full(client, seeded_manager):
+    """省 token：默认截断长字段并标注 truncated_fields；full=True 放宽但 inner_html 仍有上限。"""
+    _, _, tab = seeded_manager
+    ele = FakeElement()
+    ele.inner_html = "<div>" + "x" * 6000 + "</div>"  # 6008 字符
+    ele.attrs = {"id": "btn1", "data-big": "y" * 500}
+    ele.value = "z" * 800
+    tab.ele_result = ele
+    found = await client.call_tool("find_element", {"locator": "#btn1"})
+    eid = found.data.element_id
+
+    info = await client.call_tool("element_info", {"element_id": eid})
+    assert len(info.data.inner_html) == 1000
+    assert len(info.data.attrs["data-big"]) == 200
+    assert len(info.data.value) == 500
+    assert info.data.attrs["id"] == "btn1"  # 短值不截断
+    assert set(info.data.truncated_fields) == {"inner_html", "attrs", "value"}
+
+    full = await client.call_tool("element_info", {"element_id": eid, "full": True})
+    assert len(full.data.inner_html) == 5000  # full 仍受 INNER_HTML_FULL 上限保护
+    assert full.data.truncated_fields == ["inner_html"]
+    assert len(full.data.attrs["data-big"]) == 500  # full 下属性值不截断
+    assert len(full.data.value) == 800
+
+
 async def test_element_input_hover_check_select_scroll(client, seeded_manager):
     _, _, tab = seeded_manager
     ele = FakeElement(tag="input")
@@ -171,6 +196,13 @@ async def test_find_elements(client, seeded_manager):
     tab.eles_result = [FakeElement(text=f"item{i}") for i in range(3)]
     result = await client.call_tool("find_elements", {"locator": ".item", "limit": 2})
     assert result.data.count == 2
+    assert result.data.total == 3
+    assert result.data.truncated is True  # 被 limit 截断必须显式标注
+
+    all_items = await client.call_tool("find_elements", {"locator": ".item", "limit": 10})
+    assert all_items.data.count == 3
+    assert all_items.data.total == 3
+    assert all_items.data.truncated is None  # 未截断时整体省略
 
 
 async def test_stale_element_error(client, seeded_manager):

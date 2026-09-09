@@ -147,7 +147,7 @@ async def test_antd_select_flow(client, seeded_manager):
     }
 
     result = await client.call_tool("antd_select", {"element_id": eid, "option_text": "目标"})
-    assert result.data.ok is True
+    assert result.data["ok"] is True
     calls = tab.actions.calls
     assert ("click", opt2, 1) in calls
 
@@ -167,6 +167,35 @@ async def test_antd_select_option_not_found(client, seeded_manager):
 
     with pytest.raises(ToolError, match="未找到选项"):
         await client.call_tool("antd_select", {"element_id": eid, "option_text": "不存在"})
+
+
+async def test_antd_get_options_paging(client, seeded_manager):
+    """选项列表封顶 50 条 + truncated 标志，offset 翻页；total 为全量去重数。"""
+    _, chromium, tab = seeded_manager
+    tab.ele_result = FakeElement(tag="div")
+    found = await client.call_tool("find_element", {"locator": ".ant-select"})
+    eid = found.data.element_id
+
+    dropdown = FakeFrame("dropdown")
+    dropdown.eles_results = {
+        "css:.ant-select-item-option": [
+            FakeElement(tag="div", text=f"选项{i:03d}") for i in range(120)
+        ]
+    }
+    tab.eles_results = {
+        "css:.ant-select-dropdown:not(.ant-select-dropdown-hidden)": [dropdown]
+    }
+
+    page1 = await client.call_tool("antd_get_options", {"element_id": eid})
+    assert page1.data["total"] == 120
+    assert len(page1.data["options"]) == 50
+    assert page1.data["truncated"] is True
+    assert page1.data["options"][0] == "选项000"
+
+    page2 = await client.call_tool("antd_get_options", {"element_id": eid, "offset": 100})
+    assert len(page2.data["options"]) == 20
+    assert page2.data["truncated"] is False
+    assert page2.data["options"][0] == "选项100"
 
 
 async def test_antd_select_dropdown_never_shows(client, seeded_manager):

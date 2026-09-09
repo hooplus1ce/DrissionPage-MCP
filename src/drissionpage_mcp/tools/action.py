@@ -107,10 +107,9 @@ def _run_step(actions, step: ActionStep) -> None:
     annotations={"title": "动作链(真实鼠标键盘)", "readOnlyHint": False},
 )
 def action_chain(tab_id: str | None = None, steps: list[ActionStep] | None = None) -> ActionChainResult:
-    """按顺序执行一串真实鼠标/键盘操作（CDP Input 事件级别，非 JS 模拟）。
+    """按顺序执行一串真实鼠标/键盘操作（CDP Input 事件级别，非 JS 模拟），最多 30 步。
 
-    典型用法：先 move_to 元素再 click；或 hold+move+release 拖拽；
-    type 输入文本前先 move_to/click 输入框获得焦点。
+    典型用法：move_to 元素再 click；hold+move+release 拖拽；type 前先点击输入框聚焦。
 
     Args:
         tab_id: 标签页 id，省略时用最新标签页
@@ -120,7 +119,7 @@ def action_chain(tab_id: str | None = None, steps: list[ActionStep] | None = Non
             - click / r_click / m_click: 可选 element_id 与 times
             - hold / release: 按下/松开鼠标（配合 move 实现拖拽）
             - scroll: delta_y/delta_x，可带 element_id
-            - type: 输入文本 text（可带 interval 按键间隔秒数；省略时自动拟人节奏 30~90ms）
+            - type: 输入文本 text（省略 interval 时自动拟人节奏 30~90ms）
             - key_down / key_up: key 如 ENTER、ESC、TAB、CTRL、SHIFT、BACKSPACE
             - wait: seconds 等待秒数
     """

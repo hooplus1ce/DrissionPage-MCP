@@ -21,6 +21,12 @@ mcp = FastMCP("Elements")
 
 TEXT_LIMIT = 500
 
+# element_info 省 token 截断上限（full=True 时 inner_html 放宽、其余不截断）
+INNER_HTML_COMPACT = 1000
+INNER_HTML_FULL = 5000
+ATTR_VALUE_LIMIT = 200
+VALUE_LIMIT = 500
+
 
 def _rect_dict(ele) -> dict[str, float] | None:
     try:
@@ -128,7 +134,7 @@ def find_elements(
         locator: 定位符，同 find_element
         tab_id: 标签页 id，省略时用最新标签页
         timeout: 未找到时的最长等待秒数
-        limit: 最多返回与登记的元素数量
+        limit: 最多返回与登记的元素数量（硬上限 200；超出时响应含 total/truncated）
         frame: 搜索范围，同 find_element 的 frame 参数
     """
     tab, session = manager.get_tab(tab_id)
@@ -136,28 +142,63 @@ def find_elements(
     eles, container = manager.search(tab, locator, many=True, timeout=timeout, frame=frame)
     if not eles:
         raise ToolError(f"未找到元素: {locator}。可先调整定位符，或用 wait_element 等待元素出现")
+    limit = min(max(limit, 1), 200)
+    ordered = prefer_visible(list(eles))
+    total = len(ordered)
     result = []
-    for ele in prefer_visible(list(eles))[: max(limit, 1)]:
+    for ele in ordered[:limit]:
         element_id = manager.register_element(ele, tab, session.browser_id, container)
         result.append(_summary(ele, element_id))
-    return ElementListResult(count=len(result), elements=result)
+    return ElementListResult(
+        count=len(result),
+        elements=result,
+        total=total,
+        truncated=(total > limit) or None,
+    )
 
 
 @mcp.tool(
     tags={"element"},
     annotations={"title": "元素详情", "readOnlyHint": True},
 )
-def element_info(element_id: str) -> ElementDetail:
-    """获取元素完整信息：文本、HTML、属性、值、链接、位置尺寸与状态。"""
+def element_info(element_id: str, full: bool = False) -> ElementDetail:
+    """获取元素完整信息：文本、HTML、属性、值、链接、位置尺寸与状态。
+
+    省 token 默认截断：inner_html≤1000、每个属性值≤200、value≤500 字符，
+    被截断的字段列在 truncated_fields 中；对长内容做精确断言时传 full=True。
+
+    Args:
+        element_id: find_element 返回的元素 id
+        full: True=放宽截断（inner_html≤5000、属性值/value 不截断）
+    """
     ele = _require_ele(element_id)
+    truncated: list[str] = []
+
+    def _cut(s: str, limit: int | None, name: str) -> str:
+        # limit=None 表示该字段在 full 模式下不设限
+        if limit is None or len(s) <= limit:
+            return s
+        if name not in truncated:
+            truncated.append(name)
+        return s[:limit]
+
     try:
-        attrs = dict(ele.attrs)
+        attrs_raw = dict(ele.attrs)
     except Exception:
-        attrs = {}
+        attrs_raw = {}
+    attrs = {
+        k: _cut(str(v), None if full else ATTR_VALUE_LIMIT, "attrs")
+        for k, v in attrs_raw.items()
+    }
     try:
-        value = ele.value
+        value_raw = ele.value
     except Exception:
-        value = None
+        value_raw = None
+    value = (
+        _cut(str(value_raw), None if full else VALUE_LIMIT, "value")
+        if value_raw is not None
+        else None
+    )
     try:
         link = ele.link
     except Exception:
@@ -172,9 +213,14 @@ def element_info(element_id: str) -> ElementDetail:
     except Exception:
         states = None
     try:
-        inner = (ele.inner_html or "")[:5000]
+        inner_raw = ele.inner_html or ""
     except Exception:
-        inner = None
+        inner_raw = None
+    inner = (
+        _cut(inner_raw, INNER_HTML_FULL if full else INNER_HTML_COMPACT, "inner_html")
+        if inner_raw is not None
+        else None
+    )
     s = _summary(ele, element_id)
     return ElementDetail(
         element_id=s.element_id,
@@ -183,11 +229,12 @@ def element_info(element_id: str) -> ElementDetail:
         css_selector=s.css_selector,
         xpath=s.xpath,
         inner_html=inner,
-        attrs={k: str(v) for k, v in attrs.items()},
-        value=str(value) if value is not None else None,
+        attrs=attrs,
+        value=value,
         link=link,
         rect=_rect_dict(ele),
         states=states,
+        truncated_fields=truncated or None,
     )
 
 
@@ -208,23 +255,23 @@ def click(
     timeout: float = 5,
     observe: bool = True,
 ) -> dict:
-    """通用全能点击工具：支持 element_id、选择器（CSS/XPath/文本/AX）、或视口绝对物理坐标。
+    """通用全能点击：支持 element_id、选择器（CSS/XPath/文本/AX）、或视口绝对坐标。
 
-    不论点击哪里，底层统一驱动 Windows 11 Dark HD 虚拟光标 60FPS 平滑滑行至目标点，
-    并伴随按下与水波纹涟漪动效，支持单双击、右键与新浮层（Modal/Toast）自动感知。
+    统一驱动 Win11 虚拟光标 60FPS 滑行 + 真实鼠标事件，支持单双击/右键，并自动感知
+    点击后弹出的新浮层（Modal/Toast，封顶 4 条）。
 
     Args:
-        target: 目标元素标识（支持 element_id、CSS 如 '.ant-btn'、XPath 如 '//button'、文本如 'text:保 存'、'保 存'）
-        point: 目标视口绝对物理坐标（如 {'x': 500, 'y': 300}），用于 Canvas 表格或无 DOM 点位点击
-        x: 目标 X 视口坐标（与 y 搭配使用，可替代 point）
-        y: 目标 Y 视口坐标（与 x 搭配使用，可替代 point）
-        frame: 目标所在 frame（'active'=当前激活模块 iframe；None=激活 iframe 优先，主文档兜底）
+        target: 目标元素标识（element_id、'.ant-btn'、'//button'、'text:保 存'、'保 存'）
+        point: 视口绝对坐标 {'x': 500, 'y': 300}（Canvas 表格或无 DOM 点位点击）
+        x: 目标 X 坐标（与 y 搭配，可替代 point）
+        y: 目标 Y 坐标（与 x 搭配，可替代 point）
+        frame: 'active'=激活模块 iframe；None=激活 iframe 优先，主文档兜底
         tab_id: 标签页 id，省略时用最新标签页
-        double: 是否双击（True 会连续两次点击并触发标准 dblclick 事件）
-        button: 鼠标按键（'left' | 'right' | 'middle'）
-        by_js: 是否改用 JS 点击（元素被遮挡时可用，虚拟光标仍会正常滑行至目标中心）
+        double: 是否双击（连续两次点击并触发标准 dblclick 事件）
+        button: 'left' | 'right' | 'middle'
+        by_js: 是否改用 JS 点击（元素被遮挡时可用）
         timeout: 等待元素可见的超时秒数
-        observe: 是否观察点击后弹出的新浮层（Modal/Toast 等）
+        observe: 是否观察点击后的新浮层
     """
     tab, session = manager.get_tab(tab_id)
 

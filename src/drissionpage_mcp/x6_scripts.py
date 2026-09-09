@@ -106,6 +106,20 @@ var translate = { tx: 0, ty: 0 };
 if (g && typeof g.getNodes === 'function') {
     zoom = g.zoom();
     translate = g.translate();
+    // 省 token：节点业务数据值级截断（键结构保留，字符串值 ≤200 字符），
+    // 拓扑断言（节点/边/端口/坐标）不受影响；长配置走节点配置弹窗读取
+    var cap = function (v) {
+        if (v === null || v === undefined) return v;
+        if (typeof v === 'string') return v.length > 200 ? v.slice(0, 200) : v;
+        if (typeof v === 'number' || typeof v === 'boolean') return v;
+        if (Array.isArray(v)) return v.map(cap);
+        if (typeof v === 'object') {
+            var o = {};
+            for (var k in v) { try { o[k] = cap(v[k]); } catch (e) {} }
+            return o;
+        }
+        return String(v).slice(0, 200);
+    };
     nodes = g.getNodes().map(function(n) {
         var pos = n.getPosition ? n.getPosition() : { x: 0, y: 0 };
         var size = n.getSize ? n.getSize() : { width: 0, height: 0 };
@@ -116,7 +130,7 @@ if (g && typeof g.getNodes === 'function') {
             shape: n.shape,
             position: pos,
             size: size,
-            data: data,
+            data: cap(data),
             ports: ports
         };
     });

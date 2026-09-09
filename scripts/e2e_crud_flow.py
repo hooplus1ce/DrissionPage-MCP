@@ -158,8 +158,9 @@ async def main() -> None:
             p("6a.输入", f"{MARKER!r}")
         if select_eids:
             r = await call(c, "antd_get_options", {"element_id": select_eids[0]}, required=False)
-            opts = r if r else None
-            p("6b.下拉选项", str(opts))
+            # 新返回形态：{"options": [...], "total": n, "truncated": bool}
+            opts = (r.data.get("options") or []) if r and r.data else []
+            p("6b.下拉选项", f"total={r.data.get('total') if r and r.data else '-'} {opts}")
             if opts:
                 r2 = await call(c, "antd_select", {"element_id": select_eids[0], "option_text": opts[0], "exact": True}, required=False)
                 if r2:
