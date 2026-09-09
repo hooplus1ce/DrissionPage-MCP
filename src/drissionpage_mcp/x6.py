@@ -17,7 +17,7 @@ from typing import Any
 
 from fastmcp.exceptions import ToolError
 
-from .cursor import act_cursor, glide_cursor, update_cursor_pos
+from .cursor import act_cursor, glide_cursor, start_drag_ghost, stop_drag_ghost, update_cursor_pos
 from .manager import manager
 from .overlays import drain_overlays
 from .x6_scripts import X6_SCRIPTS
@@ -595,7 +595,22 @@ def add_node(
     actions.move_to((src_x, src_y), duration=0.25)
     time.sleep(0.08)
 
+    KIND_COLORS = {
+        "start": "#389e0d",
+        "开始节点": "#389e0d",
+        "approver": "#1890ff",
+        "审批人": "#1890ff",
+        "branch": "#fa8c16",
+        "分支节点": "#fa8c16",
+        "parallel": "#722ed1",
+        "并行节点": "#722ed1",
+        "end": "#f5222d",
+        "结束节点": "#f5222d",
+    }
+    ghost_color = KIND_COLORS.get(target_label, KIND_COLORS.get(clean, "#1890ff"))
+
     act_cursor(session.tab, "down", src_x, src_y)
+    start_drag_ghost(session.tab, target_label, ghost_color)
     actions.hold()
     try:
         session.tab._run_cdp(
@@ -666,6 +681,7 @@ def add_node(
         pass
     actions.release()
     act_cursor(session.tab, "up", dst_x, dst_y)
+    stop_drag_ghost(session.tab)
     act_cursor(session.tab, "click", dst_x, dst_y)
     time.sleep(0.25)
     # 触发落点投放逻辑

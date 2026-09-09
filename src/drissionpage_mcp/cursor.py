@@ -122,6 +122,10 @@ _CURSOR_HELPER_JS_TEMPLATE = r"""
     window.__dp_last_y = y;
     var scale = isDown ? ' scale(0.92)' : ' scale(1)';
     cursor.style.transform = 'translate3d(' + (x - 5) + 'px, ' + (y - 10) + 'px, 0)' + scale;
+    var ghost = document.getElementById('__dp_drag_ghost__');
+    if (ghost) {
+      ghost.style.transform = 'translate3d(' + (x + 14) + 'px, ' + (y + 14) + 'px, 0) rotate(2deg) scale(1.02)';
+    }
   };
 
   var show = function (stayMs) {
@@ -218,6 +222,60 @@ _CURSOR_HELPER_JS_TEMPLATE = r"""
     cursor.style.opacity = '0';
   };
 
+  window.__dp_start_drag_ghost = function (text, color, iconSvg) {
+    var g = document.getElementById('__dp_drag_ghost__');
+    if (g) g.remove();
+    g = document.createElement('div');
+    g.id = '__dp_drag_ghost__';
+    var theme = color || '#1890ff';
+    g.style.cssText = [
+      'position: fixed !important',
+      'left: 0 !important',
+      'top: 0 !important',
+      'pointer-events: none !important',
+      'z-index: 2147483645 !important',
+      'background: rgba(255, 255, 255, 0.95) !important',
+      'backdrop-filter: blur(6px) !important',
+      'border: 2px solid ' + theme + ' !important',
+      'box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2), 0 2px 10px rgba(24, 144, 255, 0.3) !important',
+      'border-radius: 6px !important',
+      'padding: 8px 18px !important',
+      'font-size: 13px !important',
+      'font-weight: 600 !important',
+      'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important',
+      'color: #1f1f1f !important',
+      'display: flex !important',
+      'align-items: center !important',
+      'gap: 8px !important',
+      'transform-origin: top left !important',
+      'transition: opacity 0.2s ease-out, transform 0.05s linear !important',
+      'opacity: 0 !important',
+      'user-select: none !important'
+    ].join('; ');
+
+    var badge = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + theme + ';box-shadow:0 0 6px ' + theme + ';"></span>';
+    g.innerHTML = (iconSvg || badge) + '<span>' + (text || '物料') + '</span>';
+    document.documentElement.appendChild(g);
+
+    var curX = window.__dp_last_x != null ? window.__dp_last_x : 100;
+    var curY = window.__dp_last_y != null ? window.__dp_last_y : 100;
+    g.style.transform = 'translate3d(' + (curX + 14) + 'px, ' + (curY + 14) + 'px, 0) rotate(2deg) scale(0.95)';
+
+    requestAnimationFrame(function () {
+      g.style.opacity = '1';
+      g.style.transform = 'translate3d(' + (curX + 14) + 'px, ' + (curY + 14) + 'px, 0) rotate(2deg) scale(1.02)';
+    });
+  };
+
+  window.__dp_stop_drag_ghost = function () {
+    var g = document.getElementById('__dp_drag_ghost__');
+    if (g) {
+      g.style.transition = 'transform 0.25s cubic-bezier(0.1, 0.8, 0.2, 1), opacity 0.22s ease-out !important';
+      g.style.opacity = '0';
+      g.style.transform += ' scale(0.68)';
+      setTimeout(function () { if (g && g.parentNode) g.remove(); }, 260);
+    }
+  };
   return 'installed';
 })();
 """
@@ -305,6 +363,33 @@ def update_cursor_pos(target: Any, x: float, y: float, down: bool = False, rippl
         tab.run_js(
             f"if (window.__dp_cursor_update) window.__dp_cursor_update({float(x):.1f}, {float(y):.1f}, {down_str}, {rip_str});"
         )
+    except Exception:
+        pass
+
+def start_drag_ghost(target: Any, text: str, color: str = "#1890ff") -> None:
+    """启动跟随鼠标的拖拽物料幽灵卡片。"""
+    if not is_cursor_enabled():
+        return
+    tab = _resolve_top_tab(target)
+    if tab is None:
+        return
+    try:
+        ensure_cursor_installed(tab)
+        clean_text = text.replace("'", "").replace('"', "").replace("\n", " ")
+        tab.run_js(
+            f"if (window.__dp_start_drag_ghost) window.__dp_start_drag_ghost('{clean_text}', '{color}');"
+        )
+    except Exception:
+        pass
+
+
+def stop_drag_ghost(target: Any) -> None:
+    """停止并淡出拖拽物料幽灵卡片。"""
+    tab = _resolve_top_tab(target)
+    if tab is None:
+        return
+    try:
+        tab.run_js("if (window.__dp_stop_drag_ghost) window.__dp_stop_drag_ghost();")
     except Exception:
         pass
 
