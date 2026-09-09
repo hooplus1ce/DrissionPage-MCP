@@ -22,8 +22,6 @@ mcp = FastMCP("AntD Portal")
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-MAX_OPTIONS_PER_PAGE = 50  # antd_get_options 单页封顶（省 token，超出用 offset 翻页）
-
 
 def _resolve_search_root(tab, frame: str | None = None, element_id: str | None = None):
     """确定 portal 浮层的搜索容器：优先用元素所在文档，其次 frame 参数。"""
@@ -92,52 +90,6 @@ def _open_dropdown(tab, ele, root, dd_loc: str, timeout: float):
                 break
             time.sleep(0.2)
     return (visible[0], container) if visible else (None, container)
-
-
-@mcp.tool(
-    tags={"antd", "interaction"},
-    annotations={"title": "列出下拉选项", "readOnlyHint": True},
-)
-def antd_get_options(
-    element_id: str, tab_id: str | None = None, timeout: float = 5, offset: int = 0
-) -> dict:
-    """展开 AntD 下拉选择框并列出可见选项文本（先于 antd_select 使用）。
-
-    省 token：单次最多返回 50 条，超出时 truncated=true 用 offset 翻页；
-    即使被截断，antd_select 仍可按已知文本直接选中（匹配在服务端完成）。
-
-    Args:
-        element_id: Select 元素的 element_id（find_element 定位 '.ant-select' 等）
-        tab_id: 标签页 id，省略时用最新标签页
-        timeout: 等待浮层出现的秒数
-        offset: 选项起始下标（分页翻页用，配合 total/truncated）
-    """
-    ele = manager.get_element(element_id)
-    tab, _ = manager.get_tab(tab_id)
-    root = _resolve_search_root(tab, None, element_id)
-    dropdown, dd_root = _open_dropdown(
-        tab, ele, root, ".ant-select-dropdown:not(.ant-select-dropdown-hidden)", timeout
-    )
-    if dropdown is None:
-        raise ToolError("下拉浮层未出现，请确认元素是 AntD Select 且可展开")
-    options = []
-    for loc in ("css:.ant-select-item-option", "css:.ant-select-dropdown-menu-item"):
-        try:
-            for o in dropdown.eles(normalize_locator(loc), timeout=2) or []:
-                t = (o.text or "").strip()
-                if t and t not in options:
-                    options.append(t)
-        except Exception:
-            continue
-    if not options:
-        raise ToolError("浮层已展开但未检索到选项，可能为异步加载，请稍后重试")
-    offset = max(0, offset)
-    page = options[offset : offset + MAX_OPTIONS_PER_PAGE]
-    return {
-        "options": page,
-        "total": len(options),
-        "truncated": offset + MAX_OPTIONS_PER_PAGE < len(options),
-    }
 
 
 @mcp.tool(

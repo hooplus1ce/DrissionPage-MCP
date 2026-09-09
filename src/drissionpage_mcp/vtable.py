@@ -59,7 +59,7 @@ def _require_bound(data: dict, action: str) -> None:
     if not data.get("bound", False):
         raise ToolError(
             f"VTable 实例未绑定，无法{action}。请确认激活页面存在 VTable 表格"
-            "（.vtable 容器），或用 vtable_info 指定 table_index 重试"
+            "（.vtable 容器），或用 vtable_inspect 指定 table_index 重试"
         )
 
 
@@ -109,7 +109,7 @@ def bind_vtable(tab_id: str | None, table_index: int | None) -> VTableSession:
         raise ToolError(
             "未能在当前页面绑定 VTable 实例（React Fiber 扫描未命中）。"
             "请确认激活的功能模块页面中存在 VTable 表格（legions-pro-vtable / "
-            ".vtable 容器），或用 vtable_info 指定 table_index 重试"
+            ".vtable 容器），或用 vtable_inspect 指定 table_index 重试"
         )
     session = VTableSession(frame=frame, tab=tab)
     _refresh_offsets(session)
@@ -243,7 +243,7 @@ def _compact_selection(selection: dict | None) -> dict | None:
     """点击响应用的紧凑选区摘要。
 
     cells 仅保留 col/row/field/value≤80（verified 判定只需 col/row）；
-    完整明细（含 originData 业务记录）走 vtable_get_selection。
+    完整明细（含 originData 业务记录）走 vtable_inspect。
     """
     if not selection:
         return None
@@ -603,7 +603,7 @@ def inspect_vtable(
         if cols * rows > MAX_RANGE_CELLS:
             raise ToolError(
                 f"区域切片超出 {MAX_RANGE_CELLS} 格上限（请求 {cols} 列 × {rows} 行），"
-                "请缩小 col_range/row_range，或用 vtable_read_cells 分页读取"
+                "请缩小 col_range/row_range 分页读取"
             )
 
     data = _run(session.frame, "inspect", target_col_idx, row, col_range, row_range)
@@ -612,7 +612,7 @@ def inspect_vtable(
         raise ToolError(
             f"区域切片超出 {data.get('maxCells', MAX_RANGE_CELLS)} 格上限"
             f"（请求 {data.get('requestedCols')} 列 × {data.get('requestedRows')} 行），"
-            "请缩小 col_range/row_range，或用 vtable_read_cells 分页读取"
+            "请缩小 col_range/row_range 分页读取"
         )
     if not data or data.get("bound") is False:
         _require_bound(data, "感知 VTable 状态")

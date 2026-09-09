@@ -396,23 +396,6 @@ try { value = t.getCellValue(col, row); } catch (e3) {}
 return JSON.stringify({ ok: true, col: col, row: row, field: field, recordIndex: recordIndex, value: value === null || value === undefined ? null : String(value).slice(0, 200), method: method });
 """
 
-# ---------------------------------------------------------------------------
-# 编辑单元格：editorManager 写入并落值（API 级编辑，绕过双击）
-# ---------------------------------------------------------------------------
-EDIT_CELL = r"""
-var t = window.__vt;
-if (!t) return JSON.stringify({ bound: false });
-var col = arguments[0], row = arguments[1], value = arguments[2], commit = arguments[3];
-var editor = (t.getEditor && t.getEditor(col, row)) || null;
-if (!editor) return JSON.stringify({ ok: false, reason: 'no-editor' });
-try { t.editorManager.startEditCell(col, row); } catch (e) { return JSON.stringify({ ok: false, reason: 'start-failed: ' + e }); }
-var editing = t.editorManager.editingEditor;
-if (!editing) return JSON.stringify({ ok: false, reason: 'start-failed' });
-try { if (editing.setValue) editing.setValue(value); } catch (e2) { return JSON.stringify({ ok: false, reason: 'set-value-failed: ' + e2 }); }
-if (commit) { try { t.editorManager.completeEdit(); } catch (e3) { return JSON.stringify({ ok: false, reason: 'commit-failed: ' + e3 }); } }
-return JSON.stringify({ ok: true });
-"""
-
 VTABLE_SCRIPTS = {
     "bind": BIND,
     "table_meta": TABLE_META,
@@ -423,9 +406,7 @@ VTABLE_SCRIPTS = {
     "scroll_to_cell": SCROLL_TO_CELL,
     "cell_icons": CELL_ICONS,
     "resolve_cell": RESOLVE_CELL,
-    "edit_cell": EDIT_CELL,
 }
-
 # ---------------------------------------------------------------------------
 # 选区信息：getSelectedCellInfos 紧凑化（含业务记录 originData）
 # ---------------------------------------------------------------------------

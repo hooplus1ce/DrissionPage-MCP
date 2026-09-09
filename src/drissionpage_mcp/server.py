@@ -40,8 +40,8 @@ DrissionPage-MCP：基于 DrissionPage 5.0 的浏览器自动化服务，面向 
 典型流程：
 1. browser_launch（启动新浏览器，自动分配端口）或 browser_connect（接管已在 9222 端口运行的浏览器）
 2. tab_new 打开标签页，或直接操作 latest_tab
-3. navigate 打开网址，find_element 定位元素后用 element_click / element_input 等交互
-4. 多账号隔离用 context_new 创建独立 BrowserContext（cookies 互不影响）
+3. navigate 打开网址，find_element 定位元素后用 click / element_input 等交互
+4. 多账号隔离用 context_new 创建独立 BrowserContext（cookies 互不影响），或用 profile_open 一键开
 5. 结束后 browser_close 关闭自启浏览器（browser_connect 接管的浏览器不会被关闭）
 
 工具默认省略 browser_id / tab_id 时作用于当前唯一（或最新）会话/标签页；
@@ -70,9 +70,8 @@ iframe 功能模块（如 APS 等管理系统）：
   antd_select / antd_date_pick / antd_modal_click / get_toasts 已自动处理
 - screenshot 可对视口、整页、指定元素或激活模块 iframe 进行真实截图，回传图片内容块用于视觉核验
 真实交互（UI 测试首选）：
-- element_click 默认通过 Actions 派发真实鼠标事件（移动→按下→抬起）
-- action_chain 可编排复杂真实操作：move_to/click/hold+move+release 拖拽/
-  scroll/type 输入/key_down+key_up 按键，全部为 CDP Input 事件级别
+- click 默认通过 Actions 派发真实鼠标事件（移动→按下→抬起），支持选择器/坐标/元素 id
+- action_chain 可编排复杂真实操作：move_to/click/hold+move+release 拖拽/scroll/type/key，全部为 CDP Input 级别
 - press_key 用于 ENTER/ESC 等单键；element_input 输入文本
 
 定位符语法（DrissionPage 5.0）：
@@ -89,7 +88,7 @@ APS 前端组件框架（实测指纹，定位时优先使用）：
   legions-pro-vtable（VTable canvas 表格）、legions-pro-quick-filter-row（列表查询区）、
   legions-pro-pagecontainer（页面容器）
 - 下拉选项是旧版类名 .ant-select-dropdown-menu-item（不是 v4+ 的 .ant-select-item-option）；
-  antd_select / antd_get_options 已自动兼容，无需手写类名
+  antd_select 已自动兼容新旧类名，无需手写类名
 - 日期组件为 .ant-calendar-*（旧版）；antd_date_pick 已自动兼容
 - 多选下拉框规则（黄金法则）：多选下拉框（Select[multiple]）在选完待选值后必须按下 ESC 键让下拉框收回（antd_select 工具已默认开启 close_multi=True 自动收回；若手动操作务必发 press_key('ESCAPE') 收回），严禁让展开的下拉菜单遮挡后续操作按钮！
 - 存在 ant-ant-* 双前缀类名（legions 包装产物），定位时直接用 ant-* 即可
@@ -97,9 +96,8 @@ APS 前端组件框架（实测指纹，定位时优先使用）：
   浮层分三家族：① .vtable__menu-element*（VTable 自带菜单，位于 .vtable 容器内部、
   z-index -9999，关闭态带 --hidden 修饰类）；② .vtable-filter-menu（挂在 body 末尾）；
   ③ 常规 AntD portal（ant-tooltip/ant-dropdown 等）。定位时按此优先检查
-- VTable 实例经 window.__vt 绑定后可用官方 API 做断言：getSelectedCellInfos
-  （选区含业务记录 originData）、cellIsInVisualView、getCellCheckboxState、
-  getBodyVisibleCellRange；vtable 工具族已封装，优先用工具
+- VTable 表格工具已收敛为 3 个核心能力：vtable_inspect（全功能多粒度快照）、vtable_find_cell（搜文本）、
+  vtable_click_cell（点击单元格或图标，自动滚动）；查表格信息统一用 vtable_inspect
 - 表单结构规整：.ant-form-item 内 .ant-form-item-label label + 控件，
   可用 '@@tag:label@@text()=字段名' 反查同 form-item 内的控件
 

@@ -136,16 +136,6 @@ def tab_close(tab_id: str | None = None, others: bool = False) -> MessageResult:
     tab.close(others=others)
     return MessageResult(ok=True, message=f"已关闭标签页 {tab.tab_id}")
 
-
-@mcp.tool(
-    tags={"browser", "tab"},
-    annotations={"title": "标签页详情", "readOnlyHint": True},
-)
-def tab_info(tab_id: str | None = None, browser_id: str | None = None) -> TabInfo:
-    """获取标签页的当前地址、标题与加载状态。"""
-    return manager.tab_info(tab_id, browser_id)
-
-
 @mcp.tool(
     tags={"browser", "tab", "advanced"},
     annotations={"title": "执行 JS (默认隐藏)", "readOnlyHint": False},

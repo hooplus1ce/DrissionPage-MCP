@@ -67,22 +67,6 @@ def navigate_back(tab_id: str | None = None, steps: int = 1) -> MessageResult:
 
 @mcp.tool(
     tags={"navigate"},
-    annotations={"title": "前进", "readOnlyHint": False},
-)
-def navigate_forward(tab_id: str | None = None, steps: int = 1) -> MessageResult:
-    """在标签页中执行浏览器前进。
-
-    Args:
-        tab_id: 标签页 id，省略时用最新标签页
-        steps: 前进步数
-    """
-    tab, _ = manager.get_tab(tab_id)
-    tab.forward(steps)
-    return MessageResult(ok=True, message=f"已前进 {steps} 步，当前页面: {tab.url}")
-
-
-@mcp.tool(
-    tags={"navigate"},
     annotations={"title": "刷新页面", "readOnlyHint": False},
 )
 def refresh(tab_id: str | None = None, ignore_cache: bool = False) -> MessageResult:

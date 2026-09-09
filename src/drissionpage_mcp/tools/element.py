@@ -388,57 +388,6 @@ def click(
 
 @mcp.tool(
     tags={"element", "action"},
-    annotations={"title": "点击元素", "readOnlyHint": False},
-)
-def element_click(
-    element_id: str,
-    by_js: bool = False,
-    use_action: bool = True,
-    observe: bool = True,
-) -> dict:
-    """点击元素。默认通过 Actions 派发真实鼠标事件，并驱动虚拟光标滑行。
-
-    Args:
-        element_id: find_element 返回的元素 id 或定位符
-        by_js: 是否改用 JS 点击（元素被遮挡时可用）
-        use_action: True=用 Actions 真实鼠标点击；False=用元素自带的模拟点击（ele.click）
-        observe: 是否观察点击后的新浮层
-    """
-    if use_action:
-        return click(target=element_id, by_js=by_js, observe=observe)
-
-    # 元素自带点击路径（非 Actions 链）
-    rec = manager.get_record(element_id)
-    container = None
-    if rec is not None:
-        ele = manager.get_element(element_id)
-        container = rec.container
-    else:
-        tab, session = manager.get_tab(None)
-        found, container = manager.search(tab, element_id)
-        if not found:
-            raise ToolError(f"未找到目标元素: {element_id!r}")
-        ele = found
-        element_id = manager.register_element(ele, tab, session.browser_id, container)
-    if observe and container is not None:
-        arm_overlays(container)
-    ele.click(by_js=by_js)
-    res: dict = {
-        "ok": True,
-        "message": f"已点击元素: {element_id}",
-        "element_id": element_id,
-        "by_action": False,
-    }
-    if observe and container is not None:
-        time.sleep(0.35)
-        overlays = drain_overlays(container)
-        if overlays:
-            res["overlays"] = overlays
-    return res
-
-
-@mcp.tool(
-    tags={"element", "action"},
     annotations={"title": "输入文本", "readOnlyHint": False},
 )
 def element_input(element_id: str, text: str, clear: bool = False, by_js: bool = False) -> MessageResult:
@@ -464,52 +413,6 @@ def element_hover(element_id: str) -> MessageResult:
     ele = _require_ele(element_id)
     ele.hover()
     return MessageResult(ok=True, message=f"已悬停在元素 {element_id}")
-
-
-@mcp.tool(
-    tags={"element", "action"},
-    annotations={"title": "选择下拉项", "readOnlyHint": False},
-)
-def element_select(element_id: str, by: str, value: str | int) -> MessageResult:
-    """在下拉框（<select>）元素中选择选项。
-
-    Args:
-        element_id: find_element 返回的 <select> 元素 id
-        by: 选择方式：text=按可见文本, value=按 value 属性, index=按序号（从 1 开始）
-        value: 匹配的文本 / value / 序号
-    """
-    ele = _require_ele(element_id)
-    if not ele.select:
-        raise ToolError(f"元素 {element_id} 不是 <select> 下拉框，无法执行选择操作")
-    ok: bool | None
-    if by == "text":
-        ok = ele.select.by_text(str(value))
-    elif by == "value":
-        ok = ele.select.by_value(str(value))
-    elif by == "index":
-        ok = ele.select.by_index(int(value))
-    else:
-        raise ToolError("by 参数只支持 text / value / index")
-    if ok is None:
-        raise ToolError(f"选择失败：元素 {element_id} 可能不是多选下拉框或选项不存在")
-    return MessageResult(ok=True, message=f"已在元素 {element_id} 中选择 {by}={value}")
-
-
-@mcp.tool(
-    tags={"element", "action"},
-    annotations={"title": "勾选复选框", "readOnlyHint": False},
-)
-def element_check(element_id: str, checked: bool = True) -> MessageResult:
-    """勾选或取消勾选复选框/单选框。
-
-    Args:
-        element_id: find_element 返回的元素 id
-        checked: True=勾选，False=取消勾选
-    """
-    ele = _require_ele(element_id)
-    ele.check(checked=checked)
-    return MessageResult(ok=True, message=f"已将元素 {element_id} 设为 {'勾选' if checked else '取消勾选'}")
-
 
 @mcp.tool(
     tags={"element", "action"},

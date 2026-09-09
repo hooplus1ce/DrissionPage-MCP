@@ -71,26 +71,25 @@ uv run python -m drissionpage_mcp --transport http --port 8000
 }
 ```
 
-## 工具一览（74 个）
+## 工具一览（精简至 54 个）
 
-底层脚本工具 `run_js` 默认禁用且对客户端隐藏（`ENABLE_RUN_JS=true` 全局放开，
-或运行时 `enable_dev_tool` 临时解锁），避免绕过高阶领域工具。
+经过冗余裁剪与领域收敛（剔除重复原子操作、下线低频调试工具、VTable 17 个碎片收敛为 3 个核心工具），大幅降低 LLM 调用的 Token 开销与工具决策幻觉。底层脚本工具 `run_js` 默认禁用且对客户端隐藏（运行时经 `enable_dev_tool` 临时解锁）。
 
-| 分组 | 工具 |
-|---|---|
-| 浏览器 | `browser_launch` `browser_connect` `browser_close` `browser_status` |
-| 标签页 | `tab_new` `tab_list` `tab_close` `tab_info` |
-| 导航 | `navigate` `nav_menu`（一键搜索直达 APS 功能模块） `navigate_back` `navigate_forward` `refresh` `wait_element` `get_page_info` `get_page_html` |
-| 元素 | `find_element` `find_elements` `element_info` `click`（通用：元素/选择器/坐标全能点击） `element_click` `element_input` `element_hover` `element_select` `element_check` `element_scroll` |
-| 多账号 | `context_new` `context_close` `context_list` `cookies_get` `cookies_set` `cookies_clear` |
-| 账号档案/登录 | `profile_list` `auth_captcha` `auth_login` `profile_open` `profile_close` `auth_session_clear` |
-| iframe | `frame_list`（所有定位工具支持 `frame` 参数：`'active'`=激活态模块 / 序号 / id） |
-| 真实交互 | `action_chain`（move_to/click/hold/drag/scroll/type/key 步骤编排，CDP Input 事件级）`press_key` |
-| AntD 弹层 | `antd_select`（多选自动 ESC 收回） `antd_get_options` `antd_date_pick` `antd_modal_click` `get_toasts` |
-| 页面快照 | `screenshot`（视口/整页/指定元素/iframe 截图，回传多模态 ImageContent） `page_controls`（单次 JS 采集可交互控件，封顶 40 项，含面包屑模块路径） |
-| VTable | `vtable_info` `vtable_inspect`（多粒度快照+交互锚点） `vtable_headers` `vtable_read_cells` `vtable_find_cell` `vtable_cell_info` `vtable_scroll_to_cell` `vtable_click_cell` `vtable_click_icon` `vtable_resolve_cell` `vtable_edit_cell` `vtable_get_selection` `vtable_cell_state` `vtable_scroll_viewport` `vtable_drag_scrollbar` `vtable_hover_cell` `vtable_cell_text` |
-| X6 流程图 | `x6_nodes` `x6_fit` `x6_move_node` `x6_connect` `x6_click_node` `x6_add_node` `x6_delete_node` |
-| 管控 | `enable_dev_tool` `disable_dev_tool`（临时解锁/锁定 `run_js`） |
+| 分组 | 工具 | 说明 |
+|---|---|---|
+| 浏览器 (4) | `browser_launch` `browser_connect` `browser_close` `browser_status` | 实例启停、接管与多会话状态 |
+| 标签页 (3) | `tab_new` `tab_list` `tab_close` | 标签页生命周期管理（查询详情统一用 `get_page_info`） |
+| 导航 (7) | `navigate` `nav_menu` `navigate_back` `refresh` `wait_element` `get_page_info` `get_page_html` | `nav_menu` 一键搜索直达 APS 模块；`get_page_info` 含权威面包屑 |
+| 元素 (7) | `find_element` `find_elements` `element_info` `click` `element_input` `element_hover` `element_scroll` | `click` 全能点击（坐标/选择器/元素 id）；表单输入与滚动 |
+| 多账号 (6) | `context_new` `context_close` `context_list` `cookies_get` `cookies_set` `cookies_clear` | 底层 BrowserContext 与 cookie 存储隔离 |
+| 账号档案/登录 (6) | `profile_list` `auth_captcha` `auth_login` `profile_open` `profile_close` `auth_session_clear` | 档案级鉴权：多模态读验证码、令牌注入、多角色并行会话 |
+| iframe (1) | `frame_list` | 功能模块 iframe 清单（所有定位工具均支持 `frame` 参数） |
+| 真实交互 (2) | `action_chain` `press_key` | CDP Input 级别物理鼠标轨迹拖拽/复杂按键序列 |
+| AntD 弹层 (4) | `antd_select` `antd_date_pick` `antd_modal_click` `get_toasts` | 兼容旧版类名；下拉多选自动 ESC 收回防遮挡；气泡断言 |
+| 页面快照 (2) | `screenshot` `page_controls` | `screenshot` 回传多模态图片内容块；`page_controls` 紧凑控件列表 |
+| VTable 表格 (3) | `vtable_inspect` `vtable_find_cell` `vtable_click_cell` | 3 大核心能力：全功能多粒度快照、搜文本、点击格/图标 |
+| X6 流程图 (7) | `x6_nodes` `x6_fit` `x6_move_node` `x6_connect` `x6_click_node` `x6_add_node` `x6_delete_node` | 审批流画布拓扑、拖拽加节点、连线、双击配置、物理删除 |
+| 管控 (2) | `enable_dev_tool` `disable_dev_tool` | 临时解锁/重新锁定 `run_js` |
 
 ### 会话模型
 
