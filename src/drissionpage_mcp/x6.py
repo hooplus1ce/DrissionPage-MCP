@@ -530,28 +530,36 @@ def add_node(
     if not target_label:
         target_label = kind.strip()
 
-    # 在激活 frame 内部查找物料项
-    palette_item = session.frame.ele(f"text:{target_label}")
+    # 在激活 frame 内部查找可拖拽物料项（优先定位含 draggable 属性的外层容器）
+    palette_item = None
+    try:
+        panel_items = session.frame.eles(".pro-approval-flow-panel-item")
+        for it in panel_items:
+            t = it.text.strip()
+            if target_label in t or clean in t.lower():
+                palette_item = it
+                break
+    except Exception:
+        pass
+
+    if not palette_item:
+        palette_item = session.frame.ele(f"text:{target_label}")
+        if palette_item and getattr(palette_item, "tag", "").lower() == "span":
+            try:
+                p = palette_item.parent()
+                if p:
+                    palette_item = p
+            except Exception:
+                pass
     if not palette_item:
         palette_item = session.frame.ele(f"@@text()={target_label}")
-    if not palette_item:
-        try:
-            panel_items = session.frame.eles(".pro-approval-flow-panel-item")
-            for it in panel_items:
-                t = it.text.strip()
-                if target_label in t or clean in t.lower():
-                    palette_item = it
-                    break
-        except Exception:
-            pass
     if not palette_item:
         raise ToolError(
             f"未在左侧物料栏找到图元 '{kind}'。可选图元: {list(PALETTE_ALIASES.keys())}"
         )
 
-    # 计算物料项在视口中的抓取起点
+    # 计算物料项在顶层视口中的抓取起点
     src_x, src_y = _ele_midpoint(palette_item, 0, 0)
-
     # 确定画布目标落点 (dst_x, dst_y)
     frame_rect = getattr(session.frame, "rect", None)
     f_loc = getattr(frame_rect, "location", (170, 80)) if frame_rect else (170, 80)
@@ -585,27 +593,57 @@ def add_node(
 
     glide_cursor(session.tab, src_x, src_y, 250)
     actions.move_to((src_x, src_y), duration=0.25)
-    time.sleep(0.1)
+    time.sleep(0.08)
 
     act_cursor(session.tab, "down", src_x, src_y)
     actions.hold()
-    time.sleep(0.12)
+    try:
+        session.tab._run_cdp(
+            "Input.dispatchMouseEvent",
+            type="mousePressed",
+            button="left",
+            buttons=1,
+            clickCount=1,
+            x=src_x,
+            y=src_y,
+        )
+    except Exception:
+        pass
+    time.sleep(0.08)
 
-    # 60 FPS 连续步进插值平滑物理拖拽轨迹，确保光标平滑跨越物料栏进入画布（无缝绝对坐标，杜绝归零）
-    steps = 25
-    dx = dst_x - src_x
-    dy = dst_y - src_y
+    # 初始微移以越过 Chromium 原生 HTML5 dragstart 拖拽判定阈值 (~5px)
+    nudge_x = src_x + 10.0
+    nudge_y = src_y + 5.0
+    try:
+        session.tab._run_cdp(
+            "Input.dispatchMouseEvent",
+            type="mouseMoved",
+            button="left",
+            buttons=1,
+            x=nudge_x,
+            y=nudge_y,
+        )
+    except Exception:
+        pass
+    update_cursor_pos(session.tab, nudge_x, nudge_y, down=True)
+    time.sleep(0.04)
+
+    # 60 FPS 连续步进插值平滑物理拖拽轨迹，驱动浏览器原生拖拽与虚拟光标同步滑入画布
+    steps = 30
+    dx = dst_x - nudge_x
+    dy = dst_y - nudge_y
     for s in range(1, steps + 1):
         t = s / steps
-        ease = 3 * t * t - 2 * t * t * t  # 物理阻尼曲线
-        cx = src_x + dx * ease
-        cy = src_y + dy * ease
+        ease = 3 * t * t - 2 * t * t * t  # 物理阻尼平滑曲线
+        cx = nudge_x + dx * ease
+        cy = nudge_y + dy * ease
         update_cursor_pos(session.tab, cx, cy, down=True)
         try:
             session.tab._run_cdp(
                 "Input.dispatchMouseEvent",
                 type="mouseMoved",
                 button="left",
+                buttons=1,
                 x=cx,
                 y=cy,
             )
@@ -619,6 +657,8 @@ def add_node(
             "Input.dispatchMouseEvent",
             type="mouseReleased",
             button="left",
+            buttons=0,
+            clickCount=1,
             x=dst_x,
             y=dst_y,
         )
