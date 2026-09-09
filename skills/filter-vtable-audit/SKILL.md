@@ -19,41 +19,41 @@ metadata:
 
 ## 前提（先确认，再动手）
 
-- 浏览器已接管（qa-automation `browser_connect`，默认端口 9222；未连接则先连接）。
-- 页面已打开目标模块列表页（如 `customerManagement`），需先确认**激活 iframe** 是哪张业务页（多 Tab 场景以 `ui_page_context` 返回的 `active_iframe.frame_url` 为准，不要假设）。
+- 浏览器就绪：通过 `profile_open(profile="aps")` 或 `browser_connect(port=9222)` 连接会话；
+- 页面已通过 `nav_menu(menu_name="...")` 打开目标模块列表页（如 `客户管理`、`采购订单` 等）；
+- 确认激活模块（以 `get_page_info` 返回的面包屑与 `active_frame` 为准，严禁凭 URL 猜测）；
 - 目标列表是 **VTable**（canvas 渲染）。
 
 ## 执行工作流
 
 ### 步骤 1 — 定位页面上下文
 
-调用 `ui_page_context`：记录 `active_iframe`（frame_id / frame_name）与 `focus_layer`。后续所有带 `frame` 的工具调用统一填该 frame（传 `frame="active"` 或精确 frame_name 均可）。
+调用 `get_page_info`：记录权威面包屑（`breadcrumb`）与激活 iframe（`active_frame`）。后续所有带 `frame` 的工具调用可默认使用 `frame="active"`。
 
 ### 步骤 2 — 采集筛选区字段全集
 
-调用 `ui_analyze_scope`（`max_controls: 300` 起，宁可多不可漏；`max_overlays: 5`），返回**紧凑控件清单**，从中解析筛选字段：
+调用 `page_controls`，返回当前功能页面的**紧凑可交互控件清单**（`controls` 与各类控件分类统计）：
 
-- 每个筛选字段由控件三元组构成：**字段名下拉**（a11y `name`=字段名，如"客户名称"）→ **操作符下拉**（`name`=包含/等于/介于 之一）→ **值控件**（文本框，或无 a11y name、css 形如 `selectUid*`/`.legions-pro-select` 的**值下拉**）。
+- 每个筛选字段通常由控件三元组构成：**字段名下拉**（`name`=字段名，如"客户名称"）→ **操作符下拉**（`name`=包含/等于/介于 之一）→ **值控件**（文本框，或无 name、css 形如 `.legions-pro-select` 的**值下拉**）。
 - **排除非筛选控件**：按钮（查询/设置/重置/收起▲/导出/更多）、分页（`li.ant-pagination-*`、每页条数、跳页 input）、表格工具栏。
-- 同一字段会以 control+combobox 双节点重复出现（如 c1/c2 都是"创建组织"），**只按字段计 1 次**；按"操作符下拉个数=字段数"复核。
-- 判定结果：字段总数 N、其中「值下拉」字段清单（后续步骤 4 需要）。
+- 判定结果：筛选字段总数 N、其中「值下拉」字段清单（后续步骤 4 需要）。
 
 ### 步骤 3 — 采集 VTable 列定义与单元格值
 
-**列定义**：调用 `vtable_analysis`（`mode: "full"`，`visible_only: false`，`max_columns: 30`，`include_values: false`）拿全量列 `title`+`field`。
+**列定义**：调用 `vtable_inspect(tab_id="${tab_id}")` 获取可视全表快照：
+- 响应中包含全量表头 `headers`（各列的 `col`, `field`, `title`）；
+- **排除系统/操作列后再计数**：复选框 (`_vtable_checkbox`)、序号 (`_vtable_series_number`)、操作/日志列（如 `_op`）。其余为**业务列**。
 
-- 输出若超 token 上限会自动持久化到 tool-results 目录的 `.txt`（JSON 单行），此时用 `python json.load` 提取 `analysis.columns[].field/.title`，不要整读 base64/大文件。
-- **排除系统/操作列后再计数**：复选框(`_vtable_checkbox`)、序号(`_vtable_series_number`)、操作/日志列（如 `_op`）。其余为**业务列**。
-
-**单元格值（仅对需要做值匹配的列）**：用 `vtable_read_cells` 按矩形批量读取（`col0/row0/col1/row1`，行优先，row0=0 是表头，数据从 row1 起）。经验：一次 20 行 × 11 列约 6KB，安全；整表 26 列建议分 2 次。记录每列取值集合（去重）。
+**单元格值（仅对需要做值匹配的列）**：
+- 对需要校验特定列取值的字段，调用 `vtable_inspect(col="列名或序号")` 进入 column 模式，直接获取该列的可见紧凑文本列表；
+- 或调用 `vtable_inspect(col_range=[col, col], row_range=[1, 20])` 按切片读取单元格取值集合（去重）。
 
 ### 步骤 4 — 展开值下拉采集待选值（重点取证）
 
-对步骤 2 识别出的每个「值下拉」，用 `ui_click` 传入其 css（`selectUid*` 类选择器，指向值下拉元素，勿点操作符下拉），`observe_after: true`：
+对步骤 2 识别出的每个「值下拉」，调用 `click` 传入其选择器或坐标，并开启 `observe=True`：
 
-- 返回结果 `overlays[].text` / `changes[].text` **直接给出全部待选值文本**（如 "1级 2级 3级 4级 5级"），无需再读 DOM 或截图。
-- 依次点击下一个值下拉会自动关闭上一个；全部采集完，点击页面空白处（无控件坐标，如工具条空白区）关闭浮层。
-
+- 返回结果 `overlays` **直接给出弹出浮层的全部待选值文本**（如 "1级 2级 3级 4级 5级"），无需多轮 DOM 查询或截图识别；
+- 依次点击下一个值下拉会自动关闭上一个；全部采集完毕后，点击页面空白处收起浮层。
 ### 步骤 5 — 三方比对，得出差异清单
 
 执行 `references/comparison-rules.md` 中的判定规则，输出差异表：
