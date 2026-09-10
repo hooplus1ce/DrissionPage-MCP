@@ -185,21 +185,9 @@ def fit_view(session: X6Session, padding: int = 40) -> dict:
     return res
 
 
-def get_topology(session: X6Session, auto_fit: bool = True) -> dict:
-    """一键读取当前流程图的完整拓扑结构与物理坐标。"""
-    if auto_fit:
-        try:
-            fit_view(session)
-        except Exception:
-            pass
-    raw_topo = _run_x6(session.frame, "extract")
-    if not raw_topo.get("ok"):
-        raise ToolError(f"提取流程图拓扑失败: {raw_topo.get('reason')}")
-    model_nodes = {n["id"]: n for n in raw_topo.get("nodes", [])}
-    edges = raw_topo.get("edges", [])
-
-    # 扫描 DOM 中的实际渲染节点和端口
-    dom_nodes = []
+def _scan_dom_nodes_once(session: X6Session, model_nodes: dict) -> list[dict]:
+    """扫描画布 DOM 中实际渲染的节点与端口，返回带视口坐标的节点列表。"""
+    dom_nodes: list[dict] = []
     for node_ele in session.frame.eles("css:g.x6-node"):
         cid = node_ele.attr("data-cell-id")
         shape = node_ele.attr("data-shape")
@@ -241,6 +229,41 @@ def get_topology(session: X6Session, auto_fit: bool = True) -> dict:
                 "ports": ports,
             }
         )
+    return dom_nodes
+
+
+def _scan_dom_nodes(session: X6Session, model_nodes: dict) -> list[dict]:
+    """DOM 扫描为空时清缓存重建 frame 会话并重试一次。
+
+    iframe 刚切换（如刚打开设计器）时，DrissionPage 5.0.0b1 的元素检索会落在
+    尚未就绪的空文档上（与 manager.search 已规避的症状同源）；不重试会让首帧拓扑
+    假性显示 0 个节点（图模型里其实已有节点与连线）。重建后仍为空视为画布确无节点。
+    """
+    nodes = _scan_dom_nodes_once(session, model_nodes)
+    if nodes:
+        return nodes
+    fresh = manager._rebuild_frame(session.tab, session.frame, "active")
+    if fresh is None:
+        return nodes
+    session.frame = fresh
+    return _scan_dom_nodes_once(session, model_nodes)
+
+
+def get_topology(session: X6Session, auto_fit: bool = True) -> dict:
+    """一键读取当前流程图的完整拓扑结构与物理坐标。"""
+    if auto_fit:
+        try:
+            fit_view(session)
+        except Exception:
+            pass
+    raw_topo = _run_x6(session.frame, "extract")
+    if not raw_topo.get("ok"):
+        raise ToolError(f"提取流程图拓扑失败: {raw_topo.get('reason')}")
+    model_nodes = {n["id"]: n for n in raw_topo.get("nodes", [])}
+    edges = raw_topo.get("edges", [])
+
+    # 扫描 DOM 中的实际渲染节点和端口（空结果时重建 frame 会话重试一次）
+    dom_nodes = _scan_dom_nodes(session, model_nodes)
 
     # 画布容器位置与安全空白点（用于可能需要的平移/取消选择）
     c_box = raw_topo.get("containerRect", {})
@@ -385,6 +408,51 @@ def move_node(
     }
 
 
+def _is_direction(port_id: str, info: dict, direction: str) -> bool:
+    """判断端口是否为指定方向（out/in）。
+
+    真机的 port-group 属性存的是方位名（right/top/left/bottom）而非 in/out，
+    方向语义只在端口 id 前缀里（out-right / in-top），故两者都要看。
+    """
+    group = str((info or {}).get("group") or "").lower()
+    name = str(port_id).lower()
+    return direction in group or name.startswith(direction) or f"-{direction}" in name
+
+
+def _pick_port(
+    ports: dict,
+    requested: str,
+    direction: str,
+    default: str,
+    anchor: tuple[float, float] | None = None,
+) -> str:
+    """默认端口名兜底：调用方使用默认值（out-0/in-0）且该值不存在时自动选一个。
+
+    真机实测该应用的端口命名是 in-top/in-left/in-bottom/out-right（port-group 只
+    存方位），默认值必然不存在，因此需要兜底：
+    - 该方向只有一个候选 → 直接采用（无歧义）；
+    - 多个候选且有锚点（对端节点中心）→ 取离锚点最近的那个（X6 磁吸的直观语义）；
+    - 其余情况原样返回，交由调用方收到「可用端口」报错后显式指定。
+    显式传入的非默认端口名一律不替换，避免把拼写错误静默改成别的端口。
+    """
+    if requested != default or requested in ports:
+        return requested
+    candidates = [str(pid) for pid, info in ports.items() if _is_direction(str(pid), info, direction)]
+    if not candidates:
+        return requested
+    if len(candidates) == 1 or anchor is None or anchor[0] is None:
+        return candidates[0] if len(candidates) == 1 else requested
+
+    def _dist(pid: str) -> float:
+        center = (ports[pid] or {}).get("viewport_center") or {}
+        cx, cy = center.get("x"), center.get("y")
+        if cx is None or cy is None:
+            return float("inf")
+        return (float(cx) - float(anchor[0])) ** 2 + (float(cy) - float(anchor[1])) ** 2
+
+    return min(candidates, key=_dist)
+
+
 def connect_nodes(
     session: X6Session,
     from_node: str,
@@ -400,6 +468,15 @@ def connect_nodes(
 
     s_ports = s_node.get("ports", {})
     t_ports = t_node.get("ports", {})
+    # 默认端口不存在时，以对端节点中心为锚点选最近的出口/入口桩
+    s_center = s_node.get("viewport_center") or {}
+    t_center = t_node.get("viewport_center") or {}
+    from_port = _pick_port(
+        s_ports, from_port, "out", "out-0", anchor=(t_center.get("x"), t_center.get("y"))
+    )
+    to_port = _pick_port(
+        t_ports, to_port, "in", "in-0", anchor=(s_center.get("x"), s_center.get("y"))
+    )
 
     if from_port not in s_ports:
         avail_s = list(s_ports.keys())
@@ -540,6 +617,28 @@ KIND_TO_INTERNAL = {
 }
 
 
+def _default_drop_point(session: X6Session, f_loc, f_size) -> tuple[float, float]:
+    """默认落点：已有节点右侧偏下，并夹在画布可视范围内。
+
+    必须用 DOM 扫描得到的**视口坐标**（topology 的 viewport_center）：
+    图模型节点只有画布局部 position，误取 viewport_center 会恒为 0，
+    落点会退化到画布之外（真机实测 (f_loc+120, f_loc+60)），节点根本放不进去。
+    """
+    try:
+        nodes = get_topology(session, auto_fit=False).get("nodes") or []
+    except Exception:
+        nodes = []
+    left, top = float(f_loc[0]), float(f_loc[1])
+    right, bottom = left + float(f_size[0]), top + float(f_size[1])
+    if not nodes:
+        return left + float(f_size[0]) * 0.4, top + float(f_size[1]) * 0.45
+    max_x = max(float(n["viewport_center"]["x"]) for n in nodes)
+    max_y = max(float(n["viewport_center"]["y"]) for n in nodes)
+    dst_x = max(left + 60, min(right - 120, max_x + 120))
+    dst_y = max(top + 60, min(bottom - 80, max_y + 60))
+    return dst_x, dst_y
+
+
 def add_node(
     session: X6Session,
     kind: str,
@@ -601,24 +700,10 @@ def add_node(
         dst_x = float(target_x)
         dst_y = float(target_y)
     else:
-        try:
-            topo = _run_x6(session.frame, "extract")
-            nodes = topo.get("nodes") or []
-            if nodes:
-                max_x = max(float(n.get("viewport_center", {}).get("x", 0)) for n in nodes)
-                max_y = max(float(n.get("viewport_center", {}).get("y", 0)) for n in nodes)
-                dst_x = min(f_loc[0] + f_size[0] - 120, max_x + 120)
-                dst_y = min(f_loc[1] + f_size[1] - 80, max_y + 60)
-            else:
-                dst_x = float(f_loc[0] + f_size[0] * 0.4)
-                dst_y = float(f_loc[1] + f_size[1] * 0.45)
-        except Exception:
-            dst_x = float(f_loc[0] + 500)
-            dst_y = float(f_loc[1] + 350)
+        dst_x, dst_y = _default_drop_point(session, f_loc, f_size)
 
-    # 记录添加前的节点列表
-    before_nodes = session.frame.eles("css:g.x6-node") if hasattr(session.frame, "eles") else []
-    before_ids = {n.attr("data-cell-id") for n in before_nodes}
+    # 记录添加前的节点列表（带空扫描韧性，避免把已有节点误判为新增）
+    before_ids = {n["cellId"] for n in _scan_dom_nodes(session, {})}
 
     # 执行真实的鼠标长按拖拽链路：移动 -> 长按 -> 60FPS平滑拖行 -> 释放
     actions = session.tab.actions
@@ -725,13 +810,10 @@ def add_node(
     time.sleep(0.3)
 
     # 检查原生拖拽是否已由前端 handleCanvasDrop 成功创建节点
-    after_nodes = session.frame.eles("css:g.x6-node") if hasattr(session.frame, "eles") else []
-    new_ids = [
-        n.attr("data-cell-id")
-        for n in after_nodes
-        if n.attr("data-cell-id") not in before_ids
-    ]
-    created_id = new_ids[0] if new_ids else None
+    after_nodes = _scan_dom_nodes(session, {})
+    rendered = {n["cellId"] for n in after_nodes}
+    created_id = next((cid for cid in rendered if cid not in before_ids), None)
+    created_via = "drag" if created_id else None
 
     # 若原生拖拽未生效（如在无头环境或 CDP 拖拽受限），通过组件内部 dnd_drop API 补全
     if not created_id:
@@ -741,6 +823,7 @@ def add_node(
         drop_res = _run_x6(session.frame, "dnd_drop", client_x, client_y, internal_kind)
         if isinstance(drop_res, dict) and drop_res.get("created_cell_id"):
             created_id = drop_res["created_cell_id"]
+            created_via = "api"
 
     # 兼容静态 mock 场景
     if not created_id and hasattr(palette_item, "click"):
@@ -749,20 +832,23 @@ def add_node(
             time.sleep(0.2)
         except Exception:
             pass
+        after_nodes = _scan_dom_nodes(session, {})
+        rendered = {n["cellId"] for n in after_nodes}
+        fallback_id = next((cid for cid in rendered if cid not in before_ids), None)
+        if fallback_id:
+            created_id, created_via = fallback_id, "palette"
 
-    after_nodes = session.frame.eles("css:g.x6-node") if hasattr(session.frame, "eles") else []
-    if not created_id:
-        new_ids = [
-            n.attr("data-cell-id")
-            for n in after_nodes
-            if n.attr("data-cell-id") not in before_ids
-        ]
-        created_id = new_ids[0] if new_ids else None
+    # 以画布实际渲染为准：verified=False 说明模型里可能有节点但画布没渲染出来
+    # （例如被建在可视区外），调用方不应据此断言新增成功。
+    after_nodes = _scan_dom_nodes(session, {})
+    verified = bool(created_id) and created_id in {n["cellId"] for n in after_nodes}
 
     return {
         "ok": True,
         "kind": target_label,
         "created_cell_id": created_id,
+        "created_via": created_via,
+        "verified": verified,
         "drop_position": {"x": round(dst_x, 1), "y": round(dst_y, 1)},
         "total_nodes_after": len(after_nodes),
     }

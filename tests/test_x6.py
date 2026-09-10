@@ -135,6 +135,81 @@ async def test_x6_nodes_topology(client, x6_seeded):
     assert "out-0" in data["nodes"][0]["ports"]
 
 
+class FlakyScanFrame(FakeX6Frame):
+    """首次 x6-node 检索返回空，复现 iframe 刚切换时的空文档症状。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.empty_scans = 1
+
+    def eles(self, locator: str):
+        if "x6-node" in locator and self.empty_scans > 0:
+            self.empty_scans -= 1
+            return []
+        return super().eles(locator)
+
+
+def test_x6_nodes_recovers_from_empty_first_scan(x6_seeded):
+    """真机缺陷回归：设计器 iframe 刚可见时首帧 DOM 扫描为空，
+    应重建 frame 会话重试一次，而不是返回 node_count=0 的假拓扑。"""
+    _, _, tab, x6_frame = x6_seeded
+    flaky = FlakyScanFrame("x6_iframe", displayed=True, location=(170, 80))
+    flaky.dom_nodes = x6_frame.dom_nodes
+    tab.iframes = [tab.iframes[0], flaky]
+
+    from drissionpage_mcp.x6 import bind_x6, get_topology
+
+    session = bind_x6(None, auto_fit=False)
+    topo = get_topology(session, auto_fit=False)
+
+    assert flaky.empty_scans == 0  # 空扫描已发生并被重试覆盖
+    assert topo["node_count"] == 2
+    assert topo["edge_count"] == 1
+    assert topo["nodes"][0]["viewport_center"]["x"] == 390.0
+
+
+def test_x6_default_drop_point_stays_inside_canvas(x6_seeded):
+    """真机缺陷回归：默认落点必须落在画布可视区内。
+
+    旧实现从图模型节点取 viewport_center（模型无此字段）→ max 恒为 0 →
+    落点退化成 (f_loc+120, f_loc+60)，实测在画布之外，节点拖不进去。
+    """
+    _, _, tab, x6_frame = x6_seeded
+    from drissionpage_mcp.x6 import _default_drop_point, bind_x6
+
+    session = bind_x6(None, auto_fit=False)
+    dst_x, dst_y = _default_drop_point(session, (170, 80), (1694, 903))
+
+    # 画布可视区：iframe 视口位置 + 尺寸（留出边距）
+    assert 170 + 60 <= dst_x <= 170 + 1694 - 120
+    assert 80 + 60 <= dst_y <= 80 + 903 - 80
+    # 落在最右/最下节点之外，避免与已有节点重叠
+    assert dst_x == 750.0 and dst_y == 360.0
+
+
+def test_pick_port_corrects_default_by_direction_and_anchor():
+    """真机回归：该应用的 port-group 存方位名（right/top/left/bottom），
+    in/out 只在端口 id 前缀里，且默认 out-0/in-0 必然不存在。"""
+    from drissionpage_mcp.x6 import _pick_port
+
+    approver = {
+        "in-top": {"group": "top", "viewport_center": {"x": 462, "y": 256}},
+        "in-left": {"group": "left", "viewport_center": {"x": 402, "y": 278}},
+        "in-bottom": {"group": "bottom", "viewport_center": {"x": 462, "y": 300}},
+        "out-right": {"group": "right", "viewport_center": {"x": 522, "y": 278}},
+    }
+    # 出口唯一 -> 纠正（group 是方位名时仍按 id 前缀识别方向）
+    assert _pick_port(approver, "out-0", "out", default="out-0") == "out-right"
+    # 入口多候选 + 锚点在左侧 -> 就近选 in-left
+    assert _pick_port(approver, "in-0", "in", default="in-0", anchor=(300, 278)) == "in-left"
+    # 无锚点时不猜，交由「可用端口」报错
+    assert _pick_port(approver, "in-0", "in", default="in-0") == "in-0"
+    # 显式指定优先；显式非默认且不存在时不替换（拼写错误应报错）
+    assert _pick_port(approver, "in-left", "in", default="in-0") == "in-left"
+    assert _pick_port(approver, "no-such-port", "out", default="out-0") == "no-such-port"
+    assert _pick_port({}, "out-0", "out", default="out-0") == "out-0"
+
+
 async def test_x6_fit(client, x6_seeded):
     """测试自适应回正与开启平移。"""
     res = await client.call_tool("x6_fit", {"padding": 30})

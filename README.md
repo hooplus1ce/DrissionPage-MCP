@@ -179,7 +179,7 @@ profile_open(profile="aps")          → 复用同一 context_id/tab_id 并注�
 
 服务基于 FastMCP 原生 [组件可见性体系](https://fastmcp.wiki/zh/servers/visibility) 重构了特性套件管理：
 - **原生 Tag 标记**：X6 工具打上 `tags={"x6"}`，VTable 打上 `tags={"vtable"}`，网络监听打上 `tags={"net"}`，底层脚本打上 `tags={"dev"}`；
-- **会话级无害激活**：`nav_menu("审批流配置")` 与 `enable_feature("x6")` 优先在当前请求上下文（`ctx.enable_components`）中激活，**仅对当前对话会话暴露 X6 专属工具，不污染并发的其他普通表单测试会话**；
+- **会话级无害激活**：`nav_menu("审批流模板管理")`（真实菜单名；进入后点模板编码即打开 X6 设计器）与 `enable_feature("x6")` 优先在当前请求上下文（`ctx.enable_components`）中激活，**仅对当前对话会话暴露 X6 专属工具，不污染并发的其他普通表单测试会话**；
 - **极致精简常态**：默认隐藏 X6 与网络监听（各 7 个工具），常驻工具为 54 个；离开特定场景后调用 `disable_feature` 自动收缩。
 
 ### 工具搜索转换器（BM25 Tool Search，可选开启）

@@ -109,8 +109,10 @@ def x6_connect(
     Args:
         from_node: 源节点 cellId（如 'n1'）或节点名称（如 '开始'）
         to_node: 目标节点 cellId（如 'n2'）或节点名称（如 '审批A'）
-        from_port: 源节点端口 id，默认为 'out-0'（出口桩）
-        to_port: 目标节点端口 id，默认为 'in-0'（入口桩）
+        from_port: 源节点出口桩 id；默认 'out-0' 仅在节点只有一个出口桩时自动纠正，
+            端口命名随节点类型而变（真机实测审批人为 out-right/in-top/in-left/in-bottom），
+            建议先用 x6_nodes 查看该节点的 ports 再显式指定
+        to_port: 目标节点入口桩 id，同上（默认 'in-0'，唯一时自动纠正）
         tab_id: 标签页 id，省略时用最新激活标签页
     """
     session = bind_x6(tab_id)
@@ -157,6 +159,10 @@ def x6_add_node(
 
     通过真实 CDP 长按（hold）、60 FPS 轨迹平滑拖拽（move_to）与释放（release），
     将左侧物料栏的节点拖拽落入画布中，取代已废弃的单点追加方式。
+
+    响应含 created_via 与 verified：created_via='drag' 表示真实拖拽生效；
+    'api' 表示原生拖拽未生效、由组件 API 补建；verified=False 说明画布上没有
+    渲染出该节点（可能被建在可视区外），此时不应断言新增成功。
 
     Args:
         kind: 图元类型或名称，支持：'审批人'（或 'approver'）、'判断节点'（或 'gateway'）、
