@@ -144,7 +144,7 @@ async def test_x6_fit(client, x6_seeded):
 async def test_x6_move_node(client, x6_seeded):
     """测试拖拽移动节点生成平滑 action 轨迹。"""
     _, _, tab, _ = x6_seeded
-    res = await client.call_tool("x6_move_node", {"node": "n2", "dx": 50, "dy": 30, "steps": 10})
+    res = await client.call_tool("x6_move_node", {"node": "n2", "dx": 50, "dy": 30})
     assert res.data["cellId"] == "n2"
     assert res.data["delta"] == {"dx": 50, "dy": 30}
     # 验证真实 actions 调用

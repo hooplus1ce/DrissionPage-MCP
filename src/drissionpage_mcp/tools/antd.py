@@ -7,6 +7,7 @@ portal 渲染到所在文档的 body 末尾。交互一律使用 Actions 真实�
 
 from __future__ import annotations
 
+import json
 import re
 import time
 
@@ -32,127 +33,154 @@ def _resolve_search_root(tab, frame: str | None = None, element_id: str | None =
     return manager.resolve_frame(tab, frame) if frame else tab
 
 
-@mcp.tool(
-    tags={"antd", "assert"},
-    annotations={"title": "读取操作提示气泡", "readOnlyHint": True},
+# 消息浮层家族：(选择器, source, 是否按类名解析 level)
+_MESSAGE_SELECTORS = (
+    ("css:.ant-message-notice", "message", True),
+    ("css:.ant-notification-notice", "notification", True),
+    ("css:.layui-layer-msg .layui-layer-content", "layer", False),
 )
-def get_toasts(tab_id: str | None = None, frame: str | None = None) -> ToastResult:
-    """读取当前显示的 AntD message 全局提示与 notification 通知内容（用于操作结果断言）。
 
-    查询范围默认为主文档+自动穿透 iframe；portal 弹层归属触发它的功能模块文档，
-    建议传 frame='active' 或使用触发元素的所在文档。
 
-    Args:
-        tab_id: 标签页 id，省略时用最新标签页
-        frame: 搜索范围（'active'=激活态 iframe，见 frame_list）
+def _message_containers(tab, frame: str | None = None) -> list:
+    """确定消息浮层的探测文档（即时解析，不做 frame 重建重试）。
+
+    frame 指定时=该文档+主文档兜底；未指定时=激活功能模块 iframe+主文档
+    （portal 气泡渲染在触发它的那个文档里）。
     """
-    tab, _ = manager.get_tab(tab_id)
-    root = _resolve_search_root(tab, frame)
+    if frame:
+        try:
+            root = manager.resolve_frame(tab, frame)
+        except Exception:
+            return [tab]
+        return [root, tab] if root is not tab else [root]
+    containers = []
+    try:
+        containers.append(manager.resolve_frame(tab, "active"))
+    except Exception:
+        pass
+    containers.append(tab)
+    return containers
 
-    messages: list[str] = []
-    notifications: list[str] = []
+
+def _level_of(node) -> str:
+    cls = (node.attr("class") or "").lower()
+    if "success" in cls:
+        return "success"
+    if "error" in cls:
+        return "error"
+    if "warn" in cls:
+        return "warning"
+    return "info"
+
+
+# 页面内一次采集全部消息浮层（替代逐选择器检索 + 逐节点状态查询的多轮 CDP）
+_COLLECT_JS = r"""
+var nodes = document.querySelectorAll('.ant-message-notice, .ant-notification-notice, .layui-layer-msg .layui-layer-content');
+var out = [];
+for (var i = 0; i < nodes.length; i++) {
+  var n = nodes[i];
+  var r = n.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) continue;
+  var txt = String(n.textContent || '').replace(/\s+/g, ' ').trim();
+  if (!txt) continue;
+  var cls = String(n.className || '').toLowerCase();
+  var source = cls.indexOf('ant-notification-notice') >= 0 ? 'notification'
+             : cls.indexOf('layui-layer-content') >= 0 ? 'layer'
+             : 'message';
+  var level = null;
+  if (source !== 'layer') {
+    var host = n.closest('.ant-message-notice, .ant-notification-notice') || n;
+    var hcls = String(host.className || '').toLowerCase();
+    level = hcls.indexOf('success') >= 0 ? 'success'
+          : hcls.indexOf('error') >= 0 ? 'error'
+          : hcls.indexOf('warn') >= 0 ? 'warning' : 'info';
+  }
+  out.push({ text: txt.slice(0, 200), source: source, level: level });
+}
+return JSON.stringify(out);
+"""
+
+
+def _collect_in(container) -> list[tuple[str, str, str | None]] | None:
+    """一次 run_js 采集容器内消息；脚本不可用/不可解析时返回 None 以回退。"""
     try:
-        found, root = manager.search(
-            tab, ".ant-message-notice-content", many=True, timeout=1, frame=frame
-        )
-        for n in found or []:
-            if n.text and n.text.strip():
-                messages.append(n.text.strip()[:200])
+        raw = container.run_js(_COLLECT_JS)
+        items = json.loads(raw) if isinstance(raw, str) else raw
     except Exception:
-        pass
-    try:
-        found, root = manager.search(
-            tab, ".ant-notification-notice", many=True, timeout=1, frame=frame
-        )
-        for n in found or []:
-            if n.text and n.text.strip():
-                notifications.append(n.text.strip()[:200])
-    except Exception:
-        pass
-    return ToastResult(message_texts=messages, notification_texts=notifications)
+        return None
+    if not isinstance(items, list):
+        return None
+    out: list[tuple[str, str, str | None]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        text = str(it.get("text") or "").strip()
+        if not text:
+            continue
+        out.append((text[:200], str(it.get("source") or "message"), it.get("level")))
+    return out
+
+
+def _collect_by_dp(container) -> list[tuple[str, str, str | None]]:
+    """回退路径：逐选择器 DP 检索（脚本采集不可用的环境）。"""
+    results: list[tuple[str, str, str | None]] = []
+    for locator, source, has_level in _MESSAGE_SELECTORS:
+        try:
+            nodes = container.eles(locator, timeout=0)
+        except Exception:
+            continue
+        for n in nodes or []:
+            try:
+                if not getattr(n.states, "is_displayed", True):
+                    continue
+                txt = (n.text or "").strip()
+                if not txt:
+                    continue
+                results.append((txt[:200], source, _level_of(n) if has_level else None))
+            except Exception:
+                continue
+    return results
+
+
+def _collect_containers(containers: list) -> list[tuple[str, str, str | None]]:
+    results: list[tuple[str, str, str | None]] = []
+    for container in containers:
+        items = _collect_in(container)
+        if items is None:
+            items = _collect_by_dp(container)
+        results.extend(items)
+    return results
 
 
 def _collect_messages(tab, frame: str | None = None) -> list[tuple[str, str, str | None]]:
     """收集当前可见的全局消息项：[(text, source, level), ...]
 
-    性能优化：在轮询等待期只做即时 DOM 探测（timeout=0），不走冗长的 frame 重建重试。
+    只做即时 DOM 探测：浮层不存在是合法结果，绝不空等。
+    优先在页面内一次 run_js 采集（每轮 1 次 CDP），不支持时回退逐选择器检索。
     """
-    results: list[tuple[str, str, str | None]] = []
+    return _collect_containers(_message_containers(tab, frame))
 
-    containers = []
-    try:
-        root = _resolve_search_root(tab, frame)
-        containers.append(root)
-        if root is not tab:
-            containers.append(tab)
-    except Exception:
-        containers = [tab]
 
-    for container in containers:
-        # 1. AntD message 气泡
-        try:
-            nodes = container.eles("css:.ant-message-notice", timeout=0)
-            for n in nodes or []:
-                try:
-                    if not getattr(n.states, "is_displayed", True):
-                        continue
-                    txt = (n.text or "").strip()
-                    if not txt:
-                        continue
-                    cls = (n.attr("class") or "").lower()
-                    lvl = "info"
-                    if "success" in cls:
-                        lvl = "success"
-                    elif "error" in cls:
-                        lvl = "error"
-                    elif "warn" in cls:
-                        lvl = "warning"
-                    results.append((txt[:200], "message", lvl))
-                except Exception:
-                    continue
-        except Exception:
-            pass
+@mcp.tool(
+    tags={"antd", "assert"},
+    annotations={"title": "读取操作提示气泡", "readOnlyHint": True},
+)
+def get_toasts(tab_id: str | None = None, frame: str | None = None) -> ToastResult:
+    """读取当前正在显示的 AntD message 全局提示与 notification 通知内容。
 
-        # 2. AntD notification
-        try:
-            nodes = container.eles("css:.ant-notification-notice", timeout=0)
-            for n in nodes or []:
-                try:
-                    if not getattr(n.states, "is_displayed", True):
-                        continue
-                    txt = (n.text or "").strip()
-                    if not txt:
-                        continue
-                    cls = (n.attr("class") or "").lower()
-                    lvl = "info"
-                    if "success" in cls:
-                        lvl = "success"
-                    elif "error" in cls:
-                        lvl = "error"
-                    elif "warn" in cls:
-                        lvl = "warning"
-                    results.append((txt[:200], "notification", lvl))
-                except Exception:
-                    continue
-        except Exception:
-            pass
+    纯即时快照：没有气泡时立刻返回空列表，不做任何等待。需要等待/断言某条消息
+    出现（如保存后等 "保存成功"）请用 wait_message（可传 pattern 与 timeout）。
 
-        # 3. 旧版 layui-layer-msg
-        try:
-            nodes = container.eles("css:.layui-layer-msg .layui-layer-content", timeout=0)
-            for n in nodes or []:
-                try:
-                    if not getattr(n.states, "is_displayed", True):
-                        continue
-                    txt = (n.text or "").strip()
-                    if txt:
-                        results.append((txt[:200], "layer", None))
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    return results
+    Args:
+        tab_id: 标签页 id，省略时用最新标签页
+        frame: 搜索范围（'active'=激活态 iframe，见 frame_list）；省略时=激活模块+主文档
+    """
+    tab, _ = manager.get_tab(tab_id)
+    entries = _collect_messages(tab, frame)
+    return ToastResult(
+        message_texts=[t for t, src, _ in entries if src in ("message", "layer")],
+        notification_texts=[t for t, src, _ in entries if src == "notification"],
+    )
 
 
 @mcp.tool(
@@ -185,12 +213,14 @@ def wait_message(
         raise ToolError(f"非法的正则表达式: {pattern!r} ({exc})") from exc
 
     tab, _ = manager.get_tab(tab_id)
+    # 轮询期间容器固定，只解析一次激活 iframe（原实现每轮都重解析，约 1+N 次 CDP）
+    containers = _message_containers(tab, frame)
     deadline = time.time() + max(timeout, 0.5)
     start_time = time.time()
     seen_messages: list[str] = []
 
     while time.time() < deadline:
-        entries = _collect_messages(tab, frame)
+        entries = _collect_containers(containers)
         for msg_text, source, level in entries:
             if msg_text not in seen_messages:
                 seen_messages.append(msg_text)

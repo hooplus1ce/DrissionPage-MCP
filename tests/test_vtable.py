@@ -38,8 +38,9 @@ class FakeVTableFrame(FakeFrame):
             ("maxResults", "find"),
             ("too-many-cells", "read"),
             ("getBodyColumnDefine", "headers"),
-            ("columnHeaderLevelCount", "meta"),
+            # bind 脚本已合并元数据，也含 columnHeaderLevelCount，故必须先匹配 bind
             ("vtableInstance", "bind"),
+            ("columnHeaderLevelCount", "meta"),
         ]
         for marker, name in markers:
             if marker in script:
@@ -76,6 +77,8 @@ META = {
 def seed_vtable_frame() -> FakeVTableFrame:
     frame = FakeVTableFrame("vt-frame", displayed=True)
     frame.responses = {
+        # 真实 BIND 脚本在绑定成功时会一并返回元数据（含 canvasBox）
+        "bind": {**META, "source": "__vtable__"},
         "meta": META,
         "geometry": GEO,
     }

@@ -38,15 +38,14 @@ def vtable_inspect(
     tab_id: str | None = None,
     table_index: int | None = None,
 ) -> dict:
-    """VTable 多粒度快照：服务端提取肉眼可见文本/颜色/交互态，坐标自动换算为视口绝对坐标。
+    """VTable 多粒度快照：提取肉眼可见文本/颜色/交互态，坐标自动换算为视口绝对坐标。
 
     5 种颗粒度（按传参自动选择）：
-    1. 全表快照（参数全空）：列头 + 视口内行紧凑矩阵（3~5KB，极省 token）。
-    2. cell 模式（col+row）：单格文本/颜色/可交互性 + bounds/center/blank_point/图标。
-    3. column 模式（只传 col 或列名）：列配置 + 表头换序锚点 header_center、调宽线 border_right、
-       表头图标 header_icons，及可见行紧凑文本列表。
-    4. row 模式（只传 row）：行背景色 bg_color、行高 height 及全列紧凑数据（col/field/title/text）。
-    5. range 模式（col_range/row_range）：文本矩阵 values + 框选锚点 drag_start/drag_end。
+    1. 全表（参数全空）：列头 + 视口内行的紧凑矩阵（3~5KB，极省 token）。
+    2. cell（col+row）：单格文本/颜色/可交互性 + bounds/center/blank_point/图标。
+    3. column（只传 col 或列名）：列配置 + 表头换序/调宽锚点与图标 + 可见行文本。
+    4. row（只传 row）：行背景色/行高 + 全列紧凑数据（col/field/title/text）。
+    5. range（col_range/row_range）：文本矩阵 values + 框选锚点 drag_start/drag_end。
 
     Args:
         col: 列序号或列名（支持 field 或中文表头，如 "申请单号"）
@@ -101,7 +100,7 @@ def vtable_click_cell(
     icon_index: int | None = None,
     double_click: bool = False,
     retry: bool = False,
-    observe: bool = True,
+    observe: bool = False,
     tab_id: str | None = None,
     table_index: int | None = None,
 ) -> dict:
@@ -116,7 +115,7 @@ def vtable_click_cell(
         icon_index: 单元格内第几个图标（从 1 起，仅在有多个相同图标时需指定）
         double_click: 是否双击（双击常用于进入单元格编辑态）
         retry: 未验证（目标格未进入选区）时自动重点一次；勾选/开关类保持 False
-        observe: 是否观察点击后的新浮层（封顶 4 条，无则省略）
+        observe: 是否观察点击后的新浮层（默认 False 省时；封顶 4 条，无则省略）
     """
     session = get_session(tab_id, table_index)
     if icon or icon_index is not None:

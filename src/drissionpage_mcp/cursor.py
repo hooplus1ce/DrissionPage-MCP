@@ -295,18 +295,32 @@ def _resolve_top_tab(target: Any) -> Any:
     return target
 
 
+_INSTALLED: set[tuple[str, str]] = set()
+_INSTALLED_LIMIT = 64
+
+
 def ensure_cursor_installed(target: Any) -> bool:
-    """在顶层主文档安装虚拟光标。"""
+    """在顶层主文档安装虚拟光标（按 tab_id + url 缓存，导航后自动重装）。
+
+    光标脚本约 8.8KB，而每次鼠标交互（glide_cursor / act_cursor）都会先调用本函数，
+    逐次注入是纯浪费；同一文档只注入一次，url 变化（含 SPA 路由跳转）视为新文档。
+    """
     if not is_cursor_enabled():
         return False
     tab = _resolve_top_tab(target)
     if tab is None:
         return False
+    key = (str(getattr(tab, "tab_id", "") or ""), str(getattr(tab, "url", "") or ""))
+    if key in _INSTALLED:
+        return True
     try:
         tab.run_js(CURSOR_HELPER_JS)
-        return True
     except Exception:
         return False
+    if len(_INSTALLED) >= _INSTALLED_LIMIT:
+        _INSTALLED.clear()
+    _INSTALLED.add(key)
+    return True
 
 
 def glide_cursor(
@@ -345,23 +359,6 @@ def act_cursor(target: Any, action: str, x: float | None = None, y: float | None
             action,
             x,
             y,
-        )
-    except Exception:
-        pass
-
-def update_cursor_pos(target: Any, x: float, y: float, down: bool = False, ripple: bool = False) -> None:
-    """直接更新虚拟光标视口绝对坐标与按压状态。"""
-    if not is_cursor_enabled():
-        return
-    tab = _resolve_top_tab(target)
-    if tab is None:
-        return
-    try:
-        ensure_cursor_installed(tab)
-        down_str = "true" if down else "false"
-        rip_str = "true" if ripple else "false"
-        tab.run_js(
-            f"if (window.__dp_cursor_update) window.__dp_cursor_update({float(x):.1f}, {float(y):.1f}, {down_str}, {rip_str});"
         )
     except Exception:
         pass

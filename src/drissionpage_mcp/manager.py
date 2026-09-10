@@ -6,9 +6,9 @@ MCP 工具之间通过 browser_id / context_id / tab_id / element_id 引用它�
 
 from __future__ import annotations
 
+import json
 import threading
 import uuid
-from dataclasses import dataclass, field
 
 from fastmcp.exceptions import ToolError
 
@@ -96,6 +96,10 @@ def _patch_dp_show_trail() -> None:
 _patch_dp_show_trail()
 
 MAX_ELEMENTS = 1000
+
+# frame 会话重建后的稳定等待（秒）。重建是同步的，只需极短 settle；
+# 该值过大会让「元素确实不存在」的合法查询成倍放大等待时间。
+_REBUILD_SETTLE = 0.12
 
 
 def _short_id() -> str:
@@ -349,8 +353,36 @@ class BrowserManager:
         """
         norm = normalize_locator(locator)
 
-        def _in(container):
-            return container.eles(norm, timeout=timeout) if many else container.ele(norm, index=index, timeout=timeout)
+        def _in(container, attempt_timeout=None):
+            t = timeout if attempt_timeout is None else attempt_timeout
+            return container.eles(norm, timeout=t) if many else container.ele(norm, index=index, timeout=t)
+
+        def _retry(container, spec):
+            """空结果时清缓存重建重试；所有重试共享同一时间预算。
+
+            原实现每次重试都用一个完整的 timeout，最坏时 1+3 次 × timeout
+            （timeout=10 时可达 40s+）会让 MCP 调用与客户端超时。这里以
+            首次检索的时间为预算上限，超出即放弃重试。
+            """
+            import time as _time
+
+            deadline = _time.monotonic() + max(float(timeout), 1.0)
+            for _ in range(3):
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0.3:
+                    break
+                fresh = self._rebuild_frame(tab, container, spec)
+                if fresh is None:
+                    break
+                if fresh is not container:
+                    container = fresh
+                # 重建 frame 会话本身是同步的，settle 只需极短；原 0.4s×3
+                # 会让「元素确实不存在」的合法查询白等 1.2s
+                _time.sleep(min(_REBUILD_SETTLE, max(remaining, 0.02)))
+                res = _in(container, remaining)
+                if res:
+                    return res, container
+            return None
 
         if frame_obj is not None:
             res = _in(frame_obj)
@@ -366,19 +398,9 @@ class BrowserManager:
             res = _in(container)
             if res:
                 return res, container
-            # frame 会话偶发返回空结果：清缓存重建，最多重试 3 次
-            import time as _time
-
-            for _ in range(3):
-                fresh = self._rebuild_frame(tab, container, frame)
-                if fresh is None:
-                    break
-                if fresh is not container:
-                    container = fresh
-                _time.sleep(0.4)
-                res = _in(container)
-                if res:
-                    return res, container
+            retried = _retry(container, frame)
+            if retried is not None:
+                return retried
             return res, container
 
         # frame 未指定：激活 frame 优先
@@ -390,18 +412,9 @@ class BrowserManager:
             res = _in(active)
             if res:
                 return res, active
-            import time as _time
-
-            for _ in range(3):
-                fresh = self._rebuild_frame(tab, active, "active")
-                if fresh is None:
-                    break
-                if fresh is not active:
-                    active = fresh
-                _time.sleep(0.4)
-                res = _in(active)
-                if res:
-                    return res, active
+            retried = _retry(active, "active")
+            if retried is not None:
+                return retried
         # 主文档兜底（幽灵节点由 prefer_visible 过滤）
         return _in(tab), tab
 
@@ -596,15 +609,77 @@ def prefer_visible(eles: list) -> list:
     return visible if visible else eles
 
 
-def _rect_center_in_page(tab, ele, container) -> tuple[float, float] | None:
-    """用 JS 计算元素中心点在页面视口中的坐标（视口 CSS 像素）。
+_BATCH_VISIBLE_JS = (
+    "var out = [];"
+    " for (var i = 0; i < arguments.length; i++) {"
+    "  var r = arguments[i].getBoundingClientRect();"
+    "  out.push(r.width > 0 && r.height > 0);"
+    " }"
+    " return JSON.stringify(out);"
+)
 
-    iframe 内元素 = frame 相对坐标 + iframe 在页面中的偏移。
+
+def prefer_visible_in(container, eles: list) -> list:
+    """一次 run_js 批量判定可见性，替代逐元素的 DOM.getBoxModel 往返。
+
+    宽选择器命中大量元素时，逐个 has_box() 会产生 N 次 CDP 往返
+    （find_elements(limit=20) 命中 500 个节点即 500 次）。
+    元素作为多个 JS 实参一次性判定；执行失败或结果不完整时回退逐元素判定，
+    语义与 prefer_visible 一致（全部不可见时原样返回）。
+    """
+    candidates = list(eles)
+    if not candidates:
+        return []
+    if container is not None:
+        try:
+            raw = container.run_js(_BATCH_VISIBLE_JS, *candidates)
+            flags = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(flags, list) and len(flags) == len(candidates):
+                visible = [e for e, ok in zip(candidates, flags) if ok]
+                return visible if visible else candidates
+        except Exception:
+            pass
+    return prefer_visible(candidates)
+
+
+_SCROLL_JS = (
+    "return document.documentElement.scrollLeft + ' ' + document.documentElement.scrollTop;"
+)
+
+
+def page_scroll(tab) -> tuple[float, float]:
+    """顶层文档当前滚动量（页面坐标 = 视口坐标 + 滚动量）。"""
+    try:
+        sx, sy = str(tab.run_js(_SCROLL_JS)).split(" ")
+        return float(sx), float(sy)
+    except Exception:
+        return 0.0, 0.0
+
+
+def vp_to_page(tab, x: float, y: float) -> tuple[float, float]:
+    """视口坐标 → 页面坐标。
+
+    DrissionPage 5.0.0b1 的 Actions.move_to((x, y)) 按**页面坐标**解释元组：
+    内部先 location_in_viewport 判断、不在视口就把页面滚到该点居中，
+    再 location_to_client 减滚动量得到 client 坐标。本服务内部统一使用
+    顶层视口坐标，故调用 move_to(元组) 前必须经此转换，
+    否则页面滚动时点击/拖拽会整体偏移 scrollTop 并被强制滚动。
+    """
+    sx, sy = page_scroll(tab)
+    return float(x) + sx, float(y) + sy
+
+
+def _rect_center_in_page(tab, ele, container) -> tuple[float, float] | None:
+    """用 JS 计算元素中心点在**顶层文档视口**中的坐标（CSS 像素）。
+
+    iframe 内元素 = frame 文档内视口坐标 + iframe 在顶层文档视口中的偏移。
     不依赖 CDP DOM.getBoxModel，规避 DP 5.0.0b1 跨 frame 盒模型查询的
     NoRectError（"Could not compute box model"）问题。
-    """
-    import json as _json
 
+    注意坐标系：DP 的 rect.location 是**页面坐标**（viewport + visualViewport.pageX/pageY），
+    与 getBoundingClientRect 的视口坐标混用会在页面滚动时整体偏移滚动量，
+    因此 iframe 偏移必须取 viewport_location。
+    """
     script = (
         "const r = arguments[0].getBoundingClientRect();"
         "return JSON.stringify({x: r.left + r.width / 2, y: r.top + r.height / 2,"
@@ -618,12 +693,14 @@ def _rect_center_in_page(tab, ele, container) -> tuple[float, float] | None:
             rel = runner.run_js(script, ele)
             if not rel:
                 continue
-            p = _json.loads(rel)
+            p = json.loads(rel)
             if float(p["w"]) <= 0 or float(p["h"]) <= 0:
                 return None  # 隐藏元素（如隐藏 iframe 内的同名节点）不可点击
             ox, oy = 0.0, 0.0
             if in_frame:
-                loc = container.rect.location  # iframe 在页面视口中的位置
+                # iframe 在顶层文档视口中的位置（不能用页面坐标 location）
+                rect = container.rect
+                loc = getattr(rect, "viewport_location", None) or rect.location
                 ox, oy = float(loc[0]), float(loc[1])
             return (float(p["x"]) + ox, float(p["y"]) + oy)
         except Exception:
@@ -679,7 +756,8 @@ def real_click(tab, ele, container=None, retries: int = 2) -> None:
             raise last_err
         raise ToolError(f"点击失败（重试 {retries} 次且坐标兜底不可用）: {last_err!r}")
     try:
-        tab.actions.move_to(point, duration=0.2).click()
+        # point 为顶层视口坐标，move_to(元组) 需要页面坐标
+        tab.actions.move_to(vp_to_page(tab, point[0], point[1]), duration=0.2).click()
     except Exception as e:
         if last_err is not None and str(last_err).strip():
             raise last_err

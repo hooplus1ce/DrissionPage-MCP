@@ -19,6 +19,27 @@ from drissionpage_mcp.x6_scripts import X6_SCRIPTS
 NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(NODE is None, reason="需要 node 才能校验 JS 片段")
 
+
+def test_dom_helpers_parse(tmp_path):
+    """非 VTable 的两段注入脚本（批量可见性判定、消息浮层采集）语法必须可解析。
+
+    这两段只在真实浏览器执行，pytest 里的 fake run_js 不会碰到它们，
+    故用 node --check 兜住最容易静默坏掉的语法问题。
+    """
+    from drissionpage_mcp.manager import _BATCH_VISIBLE_JS
+    from drissionpage_mcp.tools.antd import _COLLECT_JS
+
+    for name, snippet in (
+        ("batch_visible", _BATCH_VISIBLE_JS),
+        ("collect_messages", _COLLECT_JS),
+    ):
+        path = tmp_path / f"{name}.js"
+        # 必须写成函数表达式（function 语句需要名字），片段内的 return 才合法
+        path.write_text(f"(function () {{\n{snippet}\n}});", encoding="utf-8")
+        proc = subprocess.run([NODE, "--check", str(path)], capture_output=True, text=True)
+        assert proc.returncode == 0, f"{name} 语法错误: {proc.stderr[:400]}"
+
+
 # 3 列 × 4 行 stub 表格：仅 (1,2) 为警示色，第 2 列全部可交互，
 # 默认色故意用大写 #FFFFFF 以验证基线比较的大小写归一。
 STUB_HARNESS = r"""

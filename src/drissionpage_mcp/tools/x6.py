@@ -34,20 +34,22 @@ mcp = FastMCP("X6")
 def x6_nodes(tab_id: str | None = None, auto_fit: bool = True) -> dict:
     """一键读取当前 X6 流程图画布的拓扑结构、全部节点及端口信息。
 
-    返回数据包含每个节点的：
+    返回数据顶层字段：node_count / edge_count / nodes / edges（画布已有连线关系）
+    / zoom / translate / container_viewport / blank_point。
+    nodes 内每个节点包含：
     - cellId: 节点唯一标识（如 'n1', 'n2', 'f1'）
     - text: 显示名称（如 '开始', '审批A(lgq)'）
     - kind / data: 业务类型（start / approver / parallelGateway / end）及配置详情
     - viewport_center: 节点物理中心绝对视口坐标（已自动完成跨 iframe 偏移换算）
     - ports: 该节点所有可用连接桩及其视口坐标（如 out-0, in-0）
-    - edges: 当前画布已有连线关系
 
     Args:
         tab_id: 标签页 id，省略时用最新激活标签页
         auto_fit: 是否自动居中并激活平移缩放（针对前端未居中/未开启 panning 缺陷的补偿），默认 True
     """
-    session = bind_x6(tab_id)
-    return get_topology(session, auto_fit=auto_fit)
+    # 视口补偿已在 bind_x6 内按 auto_fit 执行一次，此处不再重复 zoomToFit
+    session = bind_x6(tab_id, auto_fit=auto_fit)
+    return get_topology(session, auto_fit=False)
 
 
 @mcp.tool(
@@ -64,7 +66,8 @@ def x6_fit(padding: int = 40, tab_id: str | None = None) -> dict:
         padding: 边距内衬像素，默认 40
         tab_id: 标签页 id，省略时用最新激活标签页
     """
-    session = bind_x6(tab_id)
+    # 本工具的职责就是回正画布，bind 阶段无需再补偿一次（避免两次 zoomToFit）
+    session = bind_x6(tab_id, auto_fit=False)
     return fit_view(session, padding=padding)
 
 
@@ -76,7 +79,6 @@ def x6_move_node(
     node: str,
     dx: int,
     dy: int,
-    steps: int = 15,
     tab_id: str | None = None,
 ) -> dict:
     """真实鼠标拖拽位移指定的流程图节点（基于 CDP Input 平滑轨迹）。
@@ -85,11 +87,10 @@ def x6_move_node(
         node: 目标节点 cellId（如 'n2'）或节点显示名称（如 '审批A'）
         dx: X 轴位移像素差（正向右，负向左）
         dy: Y 轴位移像素差（正向下，负向上）
-        steps: 插值轨迹步数，默认 15（确保 X6 完整捕获 mousemove 轨迹与重绘）
         tab_id: 标签页 id，省略时用最新激活标签页
     """
     session = bind_x6(tab_id)
-    return move_node(session, node, dx=dx, dy=dy, steps=steps)
+    return move_node(session, node, dx=dx, dy=dy)
 
 
 @mcp.tool(
@@ -101,7 +102,6 @@ def x6_connect(
     to_node: str,
     from_port: str = "out-0",
     to_port: str = "in-0",
-    steps: int = 20,
     tab_id: str | None = None,
 ) -> dict:
     """从源节点的出口桩拖拽连接至目标节点的入口桩（真实 CDP 物理拉线）。
@@ -111,7 +111,6 @@ def x6_connect(
         to_node: 目标节点 cellId（如 'n2'）或节点名称（如 '审批A'）
         from_port: 源节点端口 id，默认为 'out-0'（出口桩）
         to_port: 目标节点端口 id，默认为 'in-0'（入口桩）
-        steps: 移动轨迹步数，默认 20（必须 >=10 以给予 X6 Magnet 磁吸算法捕获时间）
         tab_id: 标签页 id，省略时用最新激活标签页
     """
     session = bind_x6(tab_id)
@@ -121,7 +120,6 @@ def x6_connect(
         to_node=to_node,
         from_port=from_port,
         to_port=to_port,
-        steps=steps,
     )
 
 

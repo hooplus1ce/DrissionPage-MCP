@@ -20,7 +20,6 @@ from .manager import manager
 from .overlays import drain_overlays
 from .vtable_scripts import VTABLE_SCRIPTS
 
-MAX_READ_CELLS = 2000
 MAX_RANGE_CELLS = 500  # vtable_inspect 区域切片格数上限（省 token 闸门）
 
 
@@ -63,15 +62,35 @@ def _require_bound(data: dict, action: str) -> None:
         )
 
 
-def _refresh_offsets(session: VTableSession) -> None:
-    """重取 canvas 与 iframe 的当前偏移（滚动/拖拽后位置会变）。"""
-    meta = _run(session.frame, "table_meta")
-    _require_bound(meta, "读取 VTable 元数据")
+def _frame_offset(frame) -> tuple[float, float]:
+    """iframe 元素在顶层视口中的偏移。
+
+    必须取 viewport_location：DP 的 rect.location 是页面坐标，与 canvas
+    getBoundingClientRect() 的视口坐标相加会在页面滚动时整体偏移滚动量。
+    """
+    rect = frame.rect
+    loc = getattr(rect, "viewport_location", None) or rect.location
+    return float(loc[0]), float(loc[1])
+
+
+def _apply_meta(session: VTableSession, meta: dict) -> None:
+    """用一次元数据快照刷新 canvas 偏移、iframe 偏移与会话元数据。"""
+    session.meta = meta
     canvas_box = meta.get("canvasBox") or {}
     session.canvas_offset = (float(canvas_box.get("x", 0)), float(canvas_box.get("y", 0)))
-    loc = session.frame.rect.location  # iframe 元素在页面视口中的位置
-    session.frame_offset = (float(loc[0]), float(loc[1]))
-    session.meta = meta
+    session.frame_offset = _frame_offset(session.frame)
+
+
+def _refresh_frame_offset(session: VTableSession) -> None:
+    """只刷新 iframe 偏移（canvas 在 iframe 内的位置不随表格内部滚动变化）。"""
+    session.frame_offset = _frame_offset(session.frame)
+
+
+def _refresh_offsets(session: VTableSession) -> None:
+    """重取 canvas 与 iframe 的当前偏移（页面滚动/拖拽后位置会变）。"""
+    meta = _run(session.frame, "table_meta")
+    _require_bound(meta, "读取 VTable 元数据")
+    _apply_meta(session, meta)
 
 
 def bind_vtable(tab_id: str | None, table_index: int | None) -> VTableSession:
@@ -112,7 +131,8 @@ def bind_vtable(tab_id: str | None, table_index: int | None) -> VTableSession:
             ".vtable 容器），或用 vtable_inspect 指定 table_index 重试"
         )
     session = VTableSession(frame=frame, tab=tab)
-    _refresh_offsets(session)
+    # bind 脚本已一并返回表格元数据，无需再单独注入 table_meta
+    _apply_meta(session, data)
     session.meta["bindSource"] = data.get("source")
     session.meta["instanceType"] = data.get("type")
     return session
@@ -205,7 +225,11 @@ def ensure_cell_visible(session: VTableSession, col: int, row: int, timeout: flo
             # 已在 canvas 范围内但被冻结列遮挡等：API 精确滚动兜底
             _run(session.frame, "scroll_to_cell", col, row)
         time.sleep(0.35)
-        _refresh_offsets(session)
+        # 表格内部滚动不改变 canvas 在 iframe 内的位置，只需刷新 iframe 偏移，
+        # 避免每轮都注入一次 table_meta
+        if canvas:
+            session.canvas_offset = (float(canvas.get("x", 0)), float(canvas.get("y", 0)))
+        _refresh_frame_offset(session)
         if _check():
             return True
     _run(session.frame, "scroll_to_cell", col, row)

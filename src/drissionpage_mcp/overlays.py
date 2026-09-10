@@ -96,8 +96,8 @@ def drain_overlays(container, limit: int = 4) -> list[dict] | None:
     return out or None
 
 
-def observed(container, action, settle: float = 0.45, limit: int = 4) -> list[dict] | None:
-    """把动作包进 观察→执行→收集 的流水线，返回紧凑浮层列表（可为 None）。"""
+def observed(container, action, settle: float = 0.45, limit: int = 4) -> tuple:
+    """把动作包进 观察→执行→收集 的流水线，返回 (动作结果, 紧凑浮层列表)。"""
     arm_overlays(container)
     result = action()
     time.sleep(settle)

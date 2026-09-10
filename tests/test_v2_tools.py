@@ -115,6 +115,16 @@ async def test_element_click_uses_actions_by_default(client, seeded_manager):
     assert ("click", ele, 1) in tab.actions.calls
 
 
+async def test_click_point_converts_viewport_to_page(client, seeded_manager):
+    """页面已滚动时，click(point=...) 必须把视口坐标换算成页面坐标交给 Actions。"""
+    _, chromium, tab = seeded_manager
+    tab.run_js = lambda script, *a, **k: "0 300"  # 顶层文档已向下滚动 300
+    await client.call_tool("click", {"point": {"x": 100, "y": 200}})
+    moves = [c for c in tab.actions.calls if c[0] == "move_to"]
+    assert moves, "未派发 move_to"
+    assert tuple(moves[-1][1]) == (100.0, 500.0)
+
+
 # ---------- AntD portal ----------
 
 async def test_get_toasts(client, seeded_manager):
@@ -122,12 +132,69 @@ async def test_get_toasts(client, seeded_manager):
     toast = FakeElement(tag="div", text="保存成功")
     noti = FakeElement(tag="div", text="系统通知")
     tab.eles_results = {
-        "css:.ant-message-notice-content": [toast],
+        "css:.ant-message-notice": [toast],
         "css:.ant-notification-notice": [noti],
     }
     result = await client.call_tool("get_toasts", {})
     assert result.data.message_texts == ["保存成功"]
     assert result.data.notification_texts == ["系统通知"]
+
+
+async def test_get_toasts_without_bubble_never_waits(client, seeded_manager):
+    """无气泡是合法结果：只做 timeout=0 的即时探测，不得出现带等待的检索。"""
+    _, chromium, tab = seeded_manager
+    active = tab.iframes[1]
+
+    result = await client.call_tool("get_toasts", {})
+
+    assert result.data.message_texts == []
+    assert result.data.notification_texts == []
+    probes = [
+        timeout
+        for container in (tab, active)
+        for loc, timeout in container.eles_timeouts
+        if loc.startswith("css:.ant-")
+    ]
+    assert probes, "应至少对消息浮层选择器做过探测"
+    assert set(probes) == {0}, f"读取气泡不应带等待超时，实测 {probes}"
+
+
+async def test_get_toasts_reads_portal_in_active_iframe(client, seeded_manager):
+    """APS 的 portal 气泡渲染在功能模块 iframe 文档里，默认范围必须覆盖它。"""
+    _, chromium, tab = seeded_manager
+    active = tab.iframes[1]
+    active.eles_results = {
+        "css:.ant-message-notice": [FakeElement(tag="div", text="保存成功")]
+    }
+
+    result = await client.call_tool("get_toasts", {})
+
+    assert result.data.message_texts == ["保存成功"]
+
+
+async def test_get_toasts_skips_hidden_ghost_nodes(client, seeded_manager):
+    """iframe 历史文档残留的不可见气泡不得计入结果。"""
+    _, chromium, tab = seeded_manager
+    ghost = FakeElement(tag="div", text="上一次的保存成功")
+    ghost.displayed = False
+    tab.eles_results = {"css:.ant-message-notice": [ghost]}
+
+    result = await client.call_tool("get_toasts", {})
+
+    assert result.data.message_texts == []
+
+
+async def test_wait_message_default_scope_sees_iframe_toast(client, seeded_manager):
+    """wait_message 默认范围同样要穿透激活模块 iframe。"""
+    _, chromium, tab = seeded_manager
+    tab.iframes[1].eles_results = {
+        "css:.ant-message-notice": [FakeElement(tag="div", text="保存成功")]
+    }
+
+    result = await client.call_tool("wait_message", {"pattern": "保存成功", "timeout": 0.5})
+
+    assert result.data.found is True
+    assert result.data.matched_text == "保存成功"
 
 
 async def test_antd_select_flow(client, seeded_manager):

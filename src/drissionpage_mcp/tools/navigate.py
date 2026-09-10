@@ -7,7 +7,7 @@ import time
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.context import Context
-from ..manager import manager, normalize_locator, prepare_locator
+from ..manager import manager, prepare_locator
 from ..models import (
     HtmlResult,
     MessageResult,
@@ -205,13 +205,8 @@ async def nav_menu(
 ) -> NavMenuResult:
     """在 APS 管理后台中按菜单名一键导航直达功能模块。
 
-    内部自动处理：
-    1. 检查顶部标签栏（.ant-tabs-tab）是否已开该模块：
-       - 若已开且 force_reload=False：直接点击激活该标签；
-       - 若指定 force_reload=True：先点击关闭按钮（.anticon-close）关闭旧标签再重新开；
-    2. 展开顶部「到达菜单」下拉选择框，输入模块名模糊匹配并点击；
-    3. 轮询等待对应的激活模块 iframe 加载完毕；
-    4. 解析最新面包屑（.ant-breadcrumb），返回模块路由与激活 frame 信息。
+    自动复用/重开顶部标签、展开「到达菜单」下拉模糊匹配、等待模块 iframe 激活，
+    并返回权威面包屑与激活 frame 信息（无需手动搜索与多轮点击）。
 
     Args:
         menu_name: 菜单/功能模块名称，如 "采购订单"、"产线管理"、"审批流配置"

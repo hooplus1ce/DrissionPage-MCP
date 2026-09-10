@@ -21,7 +21,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.utilities.types import Image
 
-from ..login import Challenge, LoginEngine
+from ..login import Challenge, LoginEngine, looks_like_login_url
 from ..manager import manager
 from ..models import AuthResult, MessageResult, ProfileInfo, ProfileSession
 from ..profiles import Profile, get_profile, load_profiles
@@ -31,7 +31,6 @@ mcp = FastMCP("Auth")
 
 DEFAULT_PROFILE = "default"
 SESSION_FILE_SUFFIX = ".json"
-LOGIN_URL_HINTS = ("/login", "signin")
 
 
 # ---------- 运行时配置（每次调用读取，便于 .env / 测试即时生效） ----------
@@ -146,12 +145,29 @@ def _cache_login(profile: Profile, cookies: list[dict], token: str | None = None
     _write_session(profile, cookies, token)
 
 
-def _cached_login(profile: Profile) -> _LoginState | None:
+def _probe_login_state(profile: Profile, state: _LoginState) -> bool | None:
+    """探测缓存登录态是否仍被服务端接受（True/False/None=无法判定）。"""
+    try:
+        return _engine(profile).probe(state.cookies)
+    except Exception:
+        return None
+
+
+def _cached_login(profile: Profile, verify: bool = False) -> _LoginState | None:
+    """取缓存登录态（内存 → 磁盘）。
+
+    verify=True 时额外做一次轻量探测：服务端已判定失效则清除缓存并返回 None，
+    强制调用方重新登录——避免旧的「纯 TTL 乐观复用」直到第一个业务操作才暴露失败。
+    探测无法判定（网络异常等）时按有效处理，不改变原有可用性。
+    """
     with _LOGIN_LOCK:
         state = _LOGINS.get(profile.name)
     if state is not None:
         fresh = state.origin == profile.origin and time.time() - state.obtained_at < _session_ttl()
         if fresh:
+            if verify and _probe_login_state(profile, state) is False:
+                _clear_session(profile)
+                return None
             return state
         with _LOGIN_LOCK:
             _LOGINS.pop(profile.name, None)
@@ -161,8 +177,12 @@ def _cached_login(profile: Profile) -> _LoginState | None:
         return None
     cookies, token = stored
     with _LOGIN_LOCK:
-        _LOGINS[profile.name] = _LoginState(cookies, profile.origin, time.time(), token)
-        return _LOGINS[profile.name]
+        state = _LoginState(cookies, profile.origin, time.time(), token)
+        _LOGINS[profile.name] = state
+    if verify and _probe_login_state(profile, state) is False:
+        _clear_session(profile)
+        return None
+    return state
 
 
 def _session_path(profile: Profile) -> Path:
@@ -242,7 +262,8 @@ def _do_login(
 ) -> AuthResult:
     """两段式登录内核：无 code 时只准备验证码，有 code 时提交。"""
     if not force and captcha_code is None:
-        state = _cached_login(profile)
+        # verify=True：复用前先探测服务端是否仍接受该登录态（O14）
+        state = _cached_login(profile, verify=True)
         if state is not None:
             return AuthResult(
                 ok=True,
@@ -312,19 +333,49 @@ def _do_login(
 
 
 def _landed_on_login(url: str | None) -> bool:
-    if not url:
+    return looks_like_login_url(url)
+
+
+def _path_of(url: str) -> str:
+    """去掉查询串、锚点与尾部斜杠的地址（用于等价比对）。"""
+    return str(url).split("#")[0].split("?")[0].rstrip("/")
+
+
+def _same_url(current: str | None, target: str | None) -> bool:
+    """忽略查询/锚点/尾斜杠的地址等价判定（用于跳过重复整页导航）。"""
+    if not current or not target:
         return False
-    lowered = str(url).lower()
-    return any(hint in lowered for hint in LOGIN_URL_HINTS)
+    return _path_of(current) == _path_of(target)
+
+
+def _on_target_page(current: str | None, target: str | None) -> bool:
+    """标签页是否已停在目标页（仍落在登录页时一律不算）。
+
+    目标页常带查询串（如 `?tab=1`），故比较路径而非完整 URL；
+    同时必须排除登录页——admin_url 往往是 login_page 的前缀。
+    """
+    if not current or not target or _landed_on_login(current):
+        return False
+    cur_path = _path_of(current)
+    tgt_path = _path_of(target)
+    return cur_path == tgt_path or cur_path.startswith(tgt_path + "/")
 
 
 def _inject(
-    tab, profile: Profile, state: _LoginState, target_url: str, source: str
+    tab,
+    profile: Profile,
+    state: _LoginState,
+    target_url: str,
+    source: str,
+    navigate: bool = True,
 ) -> AuthResult:
-    """把登录态注入标签页并导航到目标页，返回落点状态。
+    """把登录态注入标签页并（可选）导航到目标页，返回落点状态。
 
     先落到同源登录页，写入 localStorage[token_store] + cookies（含令牌 cookie），
     再进入目标页——与前端登录后的真实状态一致。
+
+    navigate=False 用于「已经停在目标页」的复用场景：只补 cookies/令牌，
+    不做 login_page → target 的两次整页导航（原实现每次复用都要重跑这两跳）。
     """
     if not state.token:
         raise ToolError(f"档案 [{profile.name}] 缺少访问令牌，请先 auth_login")
@@ -338,7 +389,10 @@ def _inject(
                 "path": "/",
             }
         )
-    tab.get(profile.login_page)
+    if navigate:
+        # 新建标签页可能已落在登录页，此时无需再导航一次
+        if not _same_url(getattr(tab, "url", None), profile.login_page):
+            tab.get(profile.login_page)
     if cookies:
         tab.set.cookies(cookies)
     tab.run_js(
@@ -346,7 +400,8 @@ def _inject(
         f"{json.dumps(state.token)});"
     )
 
-    tab.get(target_url)
+    if navigate:
+        tab.get(target_url)
     url = getattr(tab, "url", None)
     ready = None
     try:
@@ -354,6 +409,12 @@ def _inject(
     except Exception:
         pass
     landed_login = _landed_on_login(url)
+    if landed_login:
+        message = "登录态未生效：仍落在登录页"
+    elif navigate:
+        message = "已注入登录态并打开目标页"
+    else:
+        message = "已复用当前已打开的目标页（未重复导航）"
     return AuthResult(
         ok=not landed_login,
         profile=profile.name,
@@ -364,7 +425,7 @@ def _inject(
         tab_id=getattr(tab, "tab_id", None),
         url=url,
         ready_state=ready,
-        message="已注入登录态并打开目标页" if not landed_login else "登录态未生效：仍落在登录页",
+        message=message,
     )
 
 
@@ -399,15 +460,23 @@ def profile_list() -> list[ProfileInfo]:
     tags={"auth"},
     annotations={"title": "获取登录验证码", "readOnlyHint": False},
 )
-def auth_captcha(profile: str = DEFAULT_PROFILE) -> list:
+def auth_captcha(profile: str = DEFAULT_PROFILE, refresh: bool = False) -> list:
     """获取登录验证码图片，**直接交给多模态模型识别**（服务端不做 OCR）。
 
     返回 [提示文本, 图片内容块]。识别后调用
     `auth_login(profile=..., captcha_id=..., captcha_code="<识别结果>")` 完成登录。
+    同一档案已有未消费的挑战时直接复用（避免重复取图导致 captcha_id 与图片错配）；
+    refresh=True 强制换一张。
+
+    Args:
+        profile: 档案名（见 profile_list）
+        refresh: 丢弃已有未消费的挑战，强制重新获取验证码
     """
     p = _get(profile)
-    challenge = _engine(p).fetch_captcha()
-    _CHALLENGES.put(challenge)
+    challenge = None if refresh else _CHALLENGES.latest(p.name)
+    if challenge is None:
+        challenge = _engine(p).fetch_captcha()
+        _CHALLENGES.put(challenge)
     fmt = "png" if "png" in challenge.content_type else "jpeg"
     hint = (
         f"验证码已就绪：profile={p.name} captcha_id={challenge.captcha_id} "
@@ -430,12 +499,9 @@ def auth_login(
 ) -> AuthResult:
     """登录档案账号（HTTP 两段式，不依赖 OCR）。
 
-    流程：
-    1. 不带 captcha_code 调用 → 若已有有效登录态直接复用；否则返回
-       `captcha_required=true` 与 `captcha_id`；
-    2. `auth_captcha(profile=...)` 查看验证码图片（交给模型识别）；
-    3. 带 `captcha_code` 再调用 → 提交登录，成功后登录态缓存在服务端
-       （`HL_SESSION_PERSIST=true` 时同时落盘，供后续复用）。
+    1. 不带 captcha_code → 有有效登录态则复用，否则返回 captcha_required=true 与 captcha_id；
+    2. auth_captcha(profile=...) 取回验证码图片交模型识别；
+    3. 带 captcha_code → 提交登录，成功后登录态缓存在服务端（HL_SESSION_PERSIST=true 时落盘）。
 
     Args:
         profile: 档案名（见 profile_list）
@@ -461,10 +527,10 @@ def profile_open(
 ) -> ProfileSession:
     """打开一个档案会话：独立 BrowserContext + 标签页 + 自动登录 + 打开目标页。
 
-    多角色并行（如审批流或签/会签、权限测试）用不同 profile 各开一套，cookies/令牌互不干扰。
-    首次调用若需要验证码，会先建好标签页并返回 `login.captcha_required=true`；
-    按提示走 `auth_captcha` → `auth_login` 后，再次调用本工具（reuse=true）即可拿到
-    同一套 context_id / tab_id 并完成注入。
+    多角色并行（或签/会签、权限测试）用不同 profile 各开一套，cookies/令牌互不干扰。
+    首次调用若需验证码会先建好标签页并返回 login.captcha_required=true；按提示走
+    auth_captcha → auth_login 后再次调用本工具（reuse=true）即复用同一套
+    context_id / tab_id 并完成注入。
 
     Args:
         profile: 档案名（见 profile_list）
@@ -486,7 +552,16 @@ def profile_open(
         login = _do_login(p, captcha_code=captcha_code, captcha_id=captcha_id)
         if login.ok:
             state = _cached_login(p)
-            login = _inject(tab, p, state, target, login.source) if state else login
+            if state:
+                # 已停在目标页时只补登录态，跳过 login_page→target 两跳整页导航
+                login = _inject(
+                    tab,
+                    p,
+                    state,
+                    target,
+                    login.source,
+                    navigate=not _on_target_page(getattr(tab, "url", None), target),
+                )
         return _session_result(p, record, tab, reused=True, login=login)
 
     session_obj = None
@@ -494,11 +569,12 @@ def profile_open(
         context = manager.new_context(browser_id)
         ctx, session_obj = manager.get_context(context.context_id, browser_id)
         context_id = context.context_id
-        tab = ctx.new_tab(url=target)
+        # 直接落在登录页：_inject 写入令牌后一跳即达目标页（原实现 target→login→target 三跳）
+        tab = ctx.new_tab(url=p.login_page)
     else:
         session_obj = manager.get_session(browser_id)
         context_id = ""
-        tab = session_obj.chromium.new_tab(url=target)
+        tab = session_obj.chromium.new_tab(url=p.login_page)
 
     login = _do_login(p, captcha_code=captcha_code, captcha_id=captcha_id)
     if login.ok:

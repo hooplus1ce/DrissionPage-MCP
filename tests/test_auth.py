@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.cookiejar
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -484,3 +485,102 @@ def test_profiles_file_helper_prefers_explicit_path(monkeypatch, tmp_path):
     explicit = tmp_path / "custom.toml"
     monkeypatch.setenv("HL_PROFILES_FILE", str(explicit))
     assert profiles_mod.profiles_file() == explicit
+
+
+# ---------- 登录态探测（O14）与导航去重（O16） ----------
+
+
+def _engine_with_probe(monkeypatch, probe_result):
+    """安装一个可编程探测结果的引擎替身。"""
+    engine = FakeEngine(load_profiles()["default"])
+    engine.probe_calls: list = []
+
+    def probe(cookies, url=None):
+        engine.probe_calls.append(url)
+        return probe_result
+
+    engine.probe = probe
+    _install_engine(monkeypatch, engine)
+    return engine
+
+
+async def test_cached_session_rejected_when_probe_fails(client, monkeypatch, tmp_path):
+    """服务端已判定失效时，缓存登录态不得再被乐观复用。"""
+    _profile_env(monkeypatch, tmp_path)
+    engine = _engine_with_probe(monkeypatch, False)
+
+    await client.call_tool("auth_login", {})
+    await client.call_tool("auth_login", {"captcha_code": "4710"})
+    assert auth_mod._LOGINS  # 登录态已缓存
+
+    again = await client.call_tool("auth_login", {})
+    assert engine.probe_calls  # 复用前确实探测过
+    assert again.data.captcha_required is True  # 探测判定失效 → 回到验证码流程
+    assert again.data.source != "session"
+    assert not auth_mod._LOGINS  # 失效缓存被清除
+
+
+async def test_cached_session_kept_when_probe_accepts(client, monkeypatch, tmp_path):
+    _profile_env(monkeypatch, tmp_path)
+    engine = _engine_with_probe(monkeypatch, True)
+
+    await client.call_tool("auth_login", {})
+    await client.call_tool("auth_login", {"captcha_code": "4710"})
+
+    again = await client.call_tool("auth_login", {})
+    assert engine.probe_calls
+    assert again.data.ok is True
+    assert again.data.source == "session"
+
+
+def _captcha_id_from(result) -> str:
+    text = "".join(getattr(block, "text", "") for block in result.content)
+    match = re.search(r"captcha_id=(\w+)", text)
+    assert match, f"响应中未包含 captcha_id: {text[:200]}"
+    return match.group(1)
+
+
+async def test_auth_captcha_reuses_pending_challenge(client, monkeypatch, tmp_path):
+    """重复取图必须复用同一挑战，否则 captcha_id 与已识别图片会错配。"""
+    _profile_env(monkeypatch, tmp_path)
+    engine = _install_engine(monkeypatch, FakeEngine(load_profiles()["default"]))
+
+    first = await client.call_tool("auth_captcha", {})
+    second = await client.call_tool("auth_captcha", {})
+    assert engine.fetched == 1
+    assert _captcha_id_from(first) == _captcha_id_from(second)
+
+    refreshed = await client.call_tool("auth_captcha", {"refresh": True})
+    assert engine.fetched == 2
+    assert _captcha_id_from(refreshed) != _captcha_id_from(first)
+
+
+def test_url_helpers():
+    assert auth_mod._same_url(LOGIN_PAGE + "/", LOGIN_PAGE)
+    assert auth_mod._same_url(ADMIN_URL + "?a=1", ADMIN_URL)
+    assert not auth_mod._same_url(ADMIN_URL, LOGIN_PAGE)
+    # admin_url 是 login_page 的前缀，停在登录页时绝不能判为「已到目标页」
+    assert not auth_mod._on_target_page(LOGIN_PAGE, ADMIN_URL)
+    assert auth_mod._on_target_page(ADMIN_URL, ADMIN_URL)
+    assert auth_mod._on_target_page(ADMIN_URL + "?tab=1", ADMIN_URL)
+
+
+async def test_profile_open_reuse_skips_extra_navigation(
+    client, monkeypatch, tmp_path, seeded_manager
+):
+    """已停在目标页的复用不应重跑 login_page → target 整页导航。"""
+    _profile_env(monkeypatch, tmp_path)
+    _install_engine(monkeypatch, FakeEngine(load_profiles()["default"]))
+    _session, chromium, _tab = seeded_manager
+
+    await client.call_tool("auth_login", {})
+    await client.call_tool("auth_login", {"captcha_code": "4710"})
+    first = (await client.call_tool("profile_open", {"profile": "default"})).data
+    tab = chromium.tabs[first.tab_id]
+    gets_before = [s for s in tab.steps if s[0] == "get"]
+
+    second = (await client.call_tool("profile_open", {"profile": "default"})).data
+    assert second.reused is True
+    assert second.logged_in is True
+    assert [s for s in tab.steps if s[0] == "get"] == gets_before  # 未再发生整页导航
+    assert "未重复导航" in (second.login.message or "")

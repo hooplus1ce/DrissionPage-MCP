@@ -24,6 +24,51 @@ from .profiles import Profile
 # 登录失败且提示语包含这些词时，判定为验证码识别错误（可换一张重试）
 _CAPTCHA_HINTS = ("验证码", "校验码", "captcha", "vcode", "code")
 
+# URL 命中这些片段即认为落在登录页（未登录/登录态失效）
+LOGIN_URL_HINTS = ("/login", "signin")
+
+
+def looks_like_login_url(url: str | None) -> bool:
+    if not url:
+        return False
+    lowered = str(url).lower()
+    return any(hint in lowered for hint in LOGIN_URL_HINTS)
+
+
+def jar_from_cookies(cookies: list[dict]) -> http.cookiejar.CookieJar:
+    """把工具层的 cookie 字典列表还原成 CookieJar（用于带登录态发起请求）。"""
+    jar = http.cookiejar.CookieJar()
+    for item in cookies or []:
+        name = item.get("name")
+        domain = item.get("domain") or ""
+        if not name or not domain:
+            continue
+        try:
+            jar.set_cookie(
+                http.cookiejar.Cookie(
+                    version=0,
+                    name=str(name),
+                    value=str(item.get("value") or ""),
+                    port=None,
+                    port_specified=False,
+                    domain=str(domain),
+                    domain_specified=True,
+                    domain_initial_dot=str(domain).startswith("."),
+                    path=str(item.get("path") or "/"),
+                    path_specified=True,
+                    secure=bool(item.get("secure")),
+                    expires=item.get("expires"),
+                    discard=False,
+                    comment=None,
+                    comment_url=None,
+                    rest={},
+                    rfc2109=False,
+                )
+            )
+        except (ValueError, TypeError):
+            continue
+    return jar
+
 
 @dataclass
 class Challenge:
@@ -215,6 +260,37 @@ class LoginEngine:
         )
 
 
+    def probe(self, cookies: list[dict], url: str | None = None) -> bool | None:
+        """轻量探测缓存登录态是否仍被服务端接受。
+
+        返回 True=有效；False=已失效（应重新登录）；None=无法判定（网络异常/状态码不明）。
+        判定依据：被重定向回登录页，或返回 401/403。
+        这是「证据驱动」的复用判定，用于替代纯 TTL 的乐观假设——
+        服务端提前失效令牌时，旧实现会先报 ok=True 直到第一个业务操作才失败。
+        """
+        profile = self.profile
+        target = url or profile.admin_url or profile.origin
+        opener = self._opener(jar_from_cookies(cookies))
+        request = urllib.request.Request(
+            target,
+            headers={
+                "User-Agent": profile.user_agent,
+                "Referer": profile.login_page,
+                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            },
+        )
+        try:
+            with opener.open(request, timeout=profile.timeout) as resp:
+                final = str(getattr(resp, "url", None) or target)
+                status = int(getattr(resp, "status", 200))
+        except urllib.error.HTTPError as exc:
+            return False if exc.code in (401, 403) else None
+        except Exception:
+            return None
+        if status in (401, 403):
+            return False
+        return not looks_like_login_url(final)
+
 def _looks_like_captcha_error(message: str) -> bool:
     if not message:
         # 空提示语通常是验证码错误（服务端不回显）
@@ -228,4 +304,12 @@ def _proxy() -> str | None:
     return value or None
 
 
-__all__ = ["Challenge", "LoginEngine", "LoginOutcome", "cookies_from_jar"]
+__all__ = [
+    "Challenge",
+    "LoginEngine",
+    "LoginOutcome",
+    "LOGIN_URL_HINTS",
+    "cookies_from_jar",
+    "jar_from_cookies",
+    "looks_like_login_url",
+]

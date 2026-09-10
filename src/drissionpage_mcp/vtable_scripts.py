@@ -15,6 +15,8 @@ from __future__ import annotations
 
 # ---------------------------------------------------------------------------
 # 实例绑定：选表（可见弹窗优先）→ 三级绑定探测 → window.__vt
+# 绑定成功时一并返回表格元数据（bind + table_meta 合并为单次注入，
+# 省一次 WebSocket 往返与 916 字符脚本传输）。
 # ---------------------------------------------------------------------------
 BIND = r"""
 var __vt_visible = function (node) {
@@ -24,7 +26,28 @@ var __vt_visible = function (node) {
   return style.display !== 'none' && style.visibility !== 'hidden' &&
     rect.width > 0 && rect.height > 0;
 };
+var __vt_num = function (v) { var n = Number(v); return Number.isFinite(n) ? n : null; };
+var __vt_meta = function (t) {
+  var headerRows = __vt_num(t.columnHeaderLevelCount);
+  if (headerRows === null) headerRows = __vt_num(t.headerRowCount);
+  if (headerRows === null) headerRows = 1;
+  var canvas = t.canvas || document.querySelector('.vtable canvas');
+  var cr = canvas ? canvas.getBoundingClientRect() : null;
+  return {
+    bound: true,
+    type: t.constructor ? t.constructor.name : 'unknown',
+    rowCount: __vt_num(t.rowCount), colCount: __vt_num(t.colCount),
+    headerRows: headerRows,
+    frozenColCount: __vt_num(t.frozenColCount) || 0,
+    frozenRowCount: __vt_num(t.frozenRowCount) || 0,
+    rightFrozenColCount: __vt_num(t.rightFrozenColCount) || 0,
+    canvasBox: cr ? { x: cr.x, y: cr.y, width: cr.width, height: cr.height } : null,
+    scrollTop: __vt_num(t.scrollTop) || 0,
+    scrollLeft: __vt_num(t.scrollLeft) || 0
+  };
+};
 var roots = Array.from(document.querySelectorAll('.vtable'));
+var containerCount = roots.length;
 var requestedIndex = Number(window.__vtable_target_index);
 var el = Number.isInteger(requestedIndex) ? roots[requestedIndex] : null;
 if (!el) {
@@ -33,14 +56,15 @@ if (!el) {
   });
   el = (inModal.length ? inModal[inModal.length - 1] : roots.filter(__vt_visible)[0]) || null;
 }
-var out = { bound: false, containers: roots.length, source: null, type: null };
+var out = { bound: false, containers: containerCount, source: null, type: null };
 if (el && __vt_visible(el)) {
   var canvas = el.querySelector('canvas');
   var native = el.__vtable__ || (canvas && canvas.__vtable__);
   if (native && typeof native.getCellRelativeRect === 'function') {
     window.__vt = native;
-    out.bound = true; out.source = '__vtable__';
-    out.type = native.constructor ? native.constructor.name : 'unknown';
+    out = __vt_meta(native);
+    out.containers = containerCount;
+    out.source = '__vtable__';
     return JSON.stringify(out);
   }
   var probe = el.parentElement || el;
@@ -62,8 +86,9 @@ if (el && __vt_visible(el)) {
       var inst = st ? (st.vtableInstance || st.tableInstance) : null;
       if (inst && typeof inst.getCellRelativeRect === 'function') {
         window.__vt = inst;
-        out.bound = true; out.source = 'fiber:depth' + cur.depth;
-        out.type = inst.constructor ? inst.constructor.name : 'unknown';
+        out = __vt_meta(inst);
+        out.containers = containerCount;
+        out.source = 'fiber:depth' + cur.depth;
         return JSON.stringify(out);
       }
       if (cur.depth < 30) {
@@ -139,31 +164,6 @@ for (var col = 0; col < colCount; col++) {
   columns.push({ col: col, field: field, title: title, type: type });
 }
 return JSON.stringify({ columns: columns, colCount: colCount, headerRows: headerRows });
-"""
-
-# ---------------------------------------------------------------------------
-# 批量读值：矩形区域，行优先矩阵
-# ---------------------------------------------------------------------------
-READ_CELLS = r"""
-var t = window.__vt;
-if (!t) return JSON.stringify({ bound: false });
-var col0 = arguments[0], row0 = arguments[1], col1 = arguments[2], row1 = arguments[3];
-var minC = Math.min(col0, col1), maxC = Math.max(col0, col1);
-var minR = Math.min(row0, row1), maxR = Math.max(row0, row1);
-if ((maxC - minC + 1) * (maxR - minR + 1) > 2000) return JSON.stringify({ error: 'too-many-cells', max: 2000 });
-var values = [];
-for (var r = minR; r <= maxR; r++) {
-  var line = [];
-  for (var c = minC; c <= maxC; c++) {
-    var v = null;
-    try { v = t.getCellValue(c, r); } catch (e) { v = null; }
-    if (v === null || v === undefined) line.push(null);
-    else if (typeof v === 'object') { try { line.push(JSON.stringify(v).slice(0, 200)); } catch (e2) { line.push(String(v).slice(0, 200)); } }
-    else line.push(String(v).slice(0, 200));
-  }
-  values.push(line);
-}
-return JSON.stringify({ minCol: minC, minRow: minR, maxCol: maxC, maxRow: maxR, values: values });
 """
 
 # ---------------------------------------------------------------------------
@@ -400,7 +400,6 @@ VTABLE_SCRIPTS = {
     "bind": BIND,
     "table_meta": TABLE_META,
     "headers": HEADERS,
-    "read_cells": READ_CELLS,
     "find_cells": FIND_CELLS,
     "cell_geometry": CELL_GEOMETRY,
     "scroll_to_cell": SCROLL_TO_CELL,

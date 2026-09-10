@@ -33,7 +33,7 @@ DrissionPage-MCP/
 │   ├── tools/               # 按领域拆分的子服务器（官方 composition 模式）
 │   │   ├── browser.py    navigate.py    element.py    frame.py
 │   │   ├── action.py     antd.py        vtable.py     account.py
-│   │   └── snapshot.py   x6.py          auth.py
+│   │   └── snapshot.py   x6.py          auth.py       net.py
 │   ├── manager.py           # 浏览器会话/上下文/元素注册表（含 DP 5.0.0b1 缺陷补丁）
 │   ├── profiles.py          # 账号档案注册表（HL_* / TOML，凭据脱敏）
 │   ├── login.py             # 登录 HTTP 引擎（标准库，验证码交多模态识别）
@@ -74,9 +74,9 @@ uv run python -m drissionpage_mcp --transport http --port 8000
 ## 工具一览（精简收敛与按需插拔）
 
 经过冗余裁剪、VTable 收敛及场景特性按需插拔，大幅降低向大模型暴露的 Schema Token 开销：
-- **全特性解锁总计 59 个工具**；
-- **默认模式（DISABLED_FEATURES=x6）仅暴露 52 个工具**（X6 流程图工具默认对 AI 隐藏，当调用 `nav_menu("审批流配置")` 时自动激活解锁）；
-- 另可通过 `DISABLED_FEATURES=x6,vtable` 进一步将普通页面常驻工具压至 49 个。
+- **全特性解锁总计 68 个工具**；
+- **默认模式（`DISABLED_FEATURES=x6,net`）仅暴露 54 个工具**（X6 流程图与网络监听各 7 个工具默认对 AI 隐藏，进入对应场景时用 `enable_feature("x6")` / `enable_feature("net")` 按需解锁）；
+- 另可通过 `DISABLED_FEATURES=x6,net,vtable` 进一步将普通页面常驻工具压至 51 个。
 
 | 分组 | 工具 | 说明 |
 |---|---|---|
@@ -88,10 +88,11 @@ uv run python -m drissionpage_mcp --transport http --port 8000
 | 账号档案/登录 (6) | `profile_list` `auth_captcha` `auth_login` `profile_open` `profile_close` `auth_session_clear` | 档案级鉴权：多模态读验证码、令牌注入、多角色并行会话 |
 | iframe (1) | `frame_list` | 功能模块 iframe 清单（所有定位工具均支持 `frame` 参数） |
 | 真实交互 (2) | `action_chain` `press_key` | CDP Input 级别物理鼠标轨迹拖拽/复杂按键序列 |
-| AntD 弹层/消息断言 (5) | `antd_select` `antd_date_pick` `antd_modal_click` `get_toasts` `wait_message` | 自动 ESC 收回防遮挡；`wait_message` 极速轮询全局气泡与断言 |
+| AntD 弹层/消息断言 (5) | `antd_select` `antd_date_pick` `antd_modal_click` `get_toasts` `wait_message` | 自动 ESC 收回防遮挡；`get_toasts` 即时快照（无气泡立刻返回，绝不空等）；`wait_message` 极速轮询全局气泡与断言 |
 | 页面快照 (2) | `screenshot` `page_controls` | `screenshot` 回传多模态图片内容块；`page_controls` 紧凑控件列表 |
 | VTable 表格 (3) | `vtable_inspect` `vtable_find_cell` `vtable_click_cell` | 3 大核心能力：全功能多粒度快照、搜文本、点击格/图标 |
 | X6 流程图 (7) | `x6_nodes` `x6_fit` `x6_move_node` `x6_connect` `x6_click_node` `x6_add_node` `x6_delete_node` | 审批流画布拓扑、拖拽加节点、连线、双击配置、物理删除（可按需插拔） |
+| 网络监听 (7) | `net_listen_start` `net_listen_wait` `net_listen_snapshot` `net_listen_wait_silent` `net_listen_pause` `net_listen_resume` `net_listen_stop` | 真实抓包（HTTP / WebSocket / SSE）：url·method·ResourceType 过滤、出队语义、即时快照不空等（可按需插拔） |
 | 场景回归 (1) | `scenario_run` | 声明式 YAML/JSON 回归测试运行器，支持变量插值与连续断言 |
 | 管控与特性 (5) | `enable_feature` `disable_feature` `list_features` `enable_dev_tool` `disable_dev_tool` | 场景特性套件动态插拔与开发者工具管控 |
 
@@ -177,18 +178,21 @@ profile_open(profile="aps")          → 复用同一 context_id/tab_id 并注�
 ### 原生 Tags 特性套件与会话隔离（Per-Session Visibility）
 
 服务基于 FastMCP 原生 [组件可见性体系](https://fastmcp.wiki/zh/servers/visibility) 重构了特性套件管理：
-- **原生 Tag 标记**：X6 工具打上 `tags={"x6"}`，VTable 打上 `tags={"vtable"}`，底层脚本打上 `tags={"dev"}`；
+- **原生 Tag 标记**：X6 工具打上 `tags={"x6"}`，VTable 打上 `tags={"vtable"}`，网络监听打上 `tags={"net"}`，底层脚本打上 `tags={"dev"}`；
 - **会话级无害激活**：`nav_menu("审批流配置")` 与 `enable_feature("x6")` 优先在当前请求上下文（`ctx.enable_components`）中激活，**仅对当前对话会话暴露 X6 专属工具，不污染并发的其他普通表单测试会话**；
-- **极致精简常态**：默认隐藏 X6（7 个工具），常驻工具压制在 54 个以内；离开特定场景后调用 `disable_feature` 自动收缩。
+- **极致精简常态**：默认隐藏 X6 与网络监听（各 7 个工具），常驻工具为 54 个；离开特定场景后调用 `disable_feature` 自动收缩。
 
 ### 工具搜索转换器（BM25 Tool Search，可选开启）
 
 针对上下文窗口极其受限或希望将 Schema Token 消耗压制到极限的模型客户端，服务内置了 FastMCP [工具搜索机制](https://fastmcp.wiki/zh/servers/transforms/tool-search)：
 - **启动方式**：环境变量设置 `ENABLE_TOOL_SEARCH=true`；
-- **效果**：
+- **效果**（实测，口径见 `scripts/audit_schema_tokens.py`）：
   - 初始仅暴露 **12 个核心黄金工具**（`profile_open`, `profile_close`, `nav_menu`, `click`, `element_input`, `antd_select`, `screenshot`, `wait_message`, `vtable_inspect`, `scenario_run`, `list_resources`, `read_resource`）以及 2 个合成工具（`search_tools`, `call_tool`）；
-  - **Schema Token 消耗瞬间降低约 75%**；
-  - 其余 40+ 底层工具支持大模型通过自然语言在 `search_tools` 中实时语义发现并无缝调用。
+  - 默认 54 工具：Schema ≈ **14.3k tokens** + INSTRUCTIONS ≈ 2.0k = **≈16.3k**；
+    开启后 14 工具：Schema ≈ **4.8k tokens** + INSTRUCTIONS 2.0k = **≈6.8k** →
+    **整体降低约 58%**（Schema 本身降低约 67%）；
+  - 其余 40+ 底层工具支持大模型通过自然语言在 `search_tools` 中实时语义发现并无缝调用；
+  - 注意：INSTRUCTIONS 在两种模式下都会下发，开启搜索后它占总量约 30%，是此时的第一大头。
 ### 面向 iframe 微前端的适配
 
 功能模块以 iframe 挂载时，服务自动保证元素可交互性：默认检索优先**激活态（可见）iframe**，
@@ -224,6 +228,28 @@ DrissionPage 的 tab 穿透检索在本 beta 中返回过期文档的幽灵节�
 `x6_delete_node` 以真实 Backspace 优先，未生效时回退图模型级 `removeCell`
 并在响应中以 `deleted_via` 标注——断言 UI 删除行为应校验 `deleted_via == "keyboard"`。
 
+### 网络数据包监控（net 特性套件）
+
+基于 DrissionPage 5.0 的 `listen` 数据监听（HTTP / WebSocket / SSE），用于**以真实收发的报文做断言**，
+而非依赖界面表现。默认隐藏，`enable_feature("net")` 按需解锁：
+
+```
+net_listen_start(urls="approverOptions")     # 1. 先开监听（清空历史队列；含同页 iframe 的跨域请求）
+antd_select(element_id=..., option_text="按部门审批")   # 2. 执行触发请求的 UI 动作
+net_listen_wait(timeout=10)                  # 3. 取包：url 自带 ?type=dept，post_data 为解析后的 JSON
+net_listen_stop()                            # 4. 用例结束释放 Network 域
+```
+
+| 工具 | 语义 |
+|---|---|
+| `net_listen_start` | 启动监听并清空队列；`urls`（含匹配/正则）、`method`（默认 GET/POST）、`res_type`（默认全部）过滤；**start 之前的数据包取不到** |
+| `net_listen_wait` | 等待 `count` 个包到达，逐条**出队**（同一包不会重复返回）；必须给有限超时，禁止无限等待 |
+| `net_listen_snapshot` | **即时快照**：队列为空立刻返回空列表，绝不空等（与 `get_toasts` 同一设计约定） |
+| `net_listen_wait_silent` | 等待在途请求全部结束（网络静默），适合「点击后等加载完再断言」 |
+| `net_listen_pause` / `net_listen_resume` / `net_listen_stop` | 暂停（可保留/清空队列）、恢复、停止并释放 Network 域 |
+
+响应体默认不返回，`include_body=True` 时附带（JSON 自动转 dict，超长截断并标注 `…(已截断)`）。
+
 ### 定位符语法（DrissionPage 5.0）
 
 ```
@@ -234,11 +260,26 @@ ax:@name=搜索@role=button               无障碍树定位（5.0 新增）
 不带前缀                                 自动匹配：先试 xpath/css，再按文本模糊匹配
 ```
 
+### 坐标契约（视口 vs 页面）
+
+服务内部**统一使用顶层文档的视口（client）坐标**，只在边界处转换：
+
+| 消费方 | 需要 | 说明 |
+|---|---|---|
+| `glide_cursor` / `act_cursor` / 原生 `Input.dispatchMouseEvent` | 视口坐标 | 直接使用 |
+| `Actions.move_to(元组)` | **页面坐标** | 必须先经 `manager.vp_to_page(tab, x, y)` 转换 |
+
+原因：DrissionPage 5.0.0b1 的 `rect.location` 返回**页面坐标**（`viewport_location + visualViewport.pageX/pageY`），
+而 `Actions.move_to(元组)` 也按页面坐标解释元组（内部会 `location_in_viewport` 判断、必要时滚动页面，再减去滚动量）。
+两者若与 `getBoundingClientRect()` 的视口坐标混用，页面一旦滚动，点击/拖拽就会整体偏移 `scrollTop` 并被强制滚动。
+因此：iframe 偏移一律取 `viewport_location`，`move_to(元组)` 一律走 `vp_to_page`。
+
 ## 开发与测试
 
 ```bash
 uv run pytest                # 单元测试（假对象，不启动浏览器）
 DPMCP_SMOKE=1 uv run pytest tests/test_smoke.py   # 真浏览器冒烟测试（需本机 Chrome）
+uv run python scripts/audit_schema_tokens.py      # 量化工具 Schema 的 Token 成本
 ```
 
 `tests/test_vtable_js.py` 用本机 node 直接执行 VTable 的 JS 片段（stub 掉
@@ -262,15 +303,21 @@ overlays 键）、**截断必须显式标注**（truncated 标志，模型可补
 
 | 约定 | 说明 |
 |---|---|
-| 浮层 / 控件封顶 | overlays 4 条×60 字符、page_controls 40 项×24 字符 |
+| 浮层 / 控件封顶 | overlays 4 条×60 字符（`observe=True` 时采集，默认关闭以省时）、page_controls 40 项×24 字符 |
 | vtable_inspect 分层 | cell 模式全量；column/row 模式无逐格几何（文本+交互态）；range 模式为文本矩阵 values + 稀疏 styles/interactive（仅偏离基线项，基线见 baseline_style）+ 框选锚点，**上限 500 格**超限报错 |
-| vtable 选区 | `vtable_click_cell` 响应中 selection 为紧凑摘要（col/row/field/value≤80）；完整明细（含 originData≤120/值）走 `vtable_get_selection` |
-| read_cells 双重闸门 | 格数上限 2000 + 响应 64KB 字节级安全网（UTF-8 字节；截断置 truncated/truncated_rows，maxRow 同步为实际末行） |
+| vtable 选区 | `vtable_click_cell` 响应中 selection 为紧凑摘要（col/row/field/value≤80）；完整明细（含 originData）走 `vtable_inspect` 的 row/range 模式 |
 | element_info | 默认截断 inner_html≤1000/属性值≤200/value≤500，标注 truncated_fields；`full=True` 放宽（inner_html≤5000、属性值/value 不截断） |
 | 无界参数钳制 | find_elements limit≤200（响应含 total/truncated）、vtable_find_cell≤100（truncated 标注）、get_page_html≤50K（默认 20K）、run_js 输出≤20K |
 | 分页 | `antd_get_options` 单页 50 条 + total/truncated，offset 翻页（antd_select 匹配在服务端，截断不影响选中） |
 | 字段白名单 | cookies_get 仅返回 name/value/domain/path/expires/httpOnly/secure/sameSite；x6 节点 data 值级截断 200 字符 |
-| 其他 | 动作类工具内置观察→执行→收集流水线；action_chain type 拟人键入（30~90ms）；verified 标志（信息性，勾选/按钮格恒 False） |
+| 其他 | action_chain type 拟人键入（30~90ms）；verified 标志（信息性，勾选/按钮格恒 False）；浮层采集为 opt-in（`observe=True`） |
+
+### 坐标与超时约定（本轮加固）
+
+- **坐标系**：服务内部统一用顶层文档**视口坐标**；`Actions.move_to(元组)` 前一律经 `vp_to_page` 转页面坐标（详见「坐标契约」小节）。iframe 偏移统一取 `viewport_location`。
+- **超时预算**：`manager.search` 的 frame 重建重试共享同一时间预算（不再 `1+3 × timeout`，最坏 40s+ → ≈timeout）；`find_element` / `find_elements` 默认 5s 且为**探测**语义，等待出现请用 `wait_element`。
+- **登录态复用**：`_cached_login(verify=True)` 先做一次轻量服务端探测，判定失效即清缓存并重新登录；`auth_captcha` 复用未消费挑战（`refresh=True` 强制换图）。
+- **整页导航次数**：`profile_open` 新建会话由「target→login→target」三跳收敛为「login→target」两跳；已停在目标页的复用不再触发任何整页导航。
 
 ## 端到端验证脚本
 
@@ -285,7 +332,7 @@ uv run python scripts/dump_dom.py         # 全量 DOM 快照与组件框架分�
 ## 版本说明
 
 - 依赖 **DrissionPage 5.0.0b1**（预览版）。5.0 删除了 `ChromiumPage`/`WebPage`，全面转向 `Chromium`/`BrowserContext`/`Tab` 模型；正式版发布后如有 API 变动，本项目的封装层（`manager.py` 与 `tools/`）是唯一的适配点。
-- 后续规划：网络监听（HTTP/WebSocket/SSE）、独立代理配置、截图与 PDF。
+- 后续规划：独立代理配置、截图与 PDF、全局（跨标签页）监听。
 
 ## 许可
 

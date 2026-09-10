@@ -5,9 +5,14 @@ from __future__ import annotations
 import pytest
 from fastmcp.exceptions import ToolError
 
-from drissionpage_mcp.manager import BrowserManager
+from drissionpage_mcp.manager import (
+    BrowserManager,
+    _rect_center_in_page,
+    page_scroll,
+    vp_to_page,
+)
 
-from conftest import FakeChromium, FakeElement, FakeTab, BrowserSession, make_session
+from conftest import FakeChromium, FakeElement, FakeFrame, FakeTab, BrowserSession, make_session
 
 
 def test_get_session_none_raises(fresh_manager):
@@ -90,6 +95,62 @@ def test_element_registry_roundtrip(fresh_manager):
     ele.alive = False
     with pytest.raises(ToolError, match="已失效"):
         fresh_manager.get_element(eid)
+
+
+class _ScrolledFrame(FakeFrame):
+    """iframe 的页面坐标与视口坐标不同（顶层文档已向下滚动 300）。"""
+
+    def run_js(self, script, *args, **kwargs):
+        return '{"x": 100, "y": 50, "w": 40, "h": 20}'
+
+    @property
+    def viewport_location(self):
+        return (0, 0)
+
+    @property
+    def location(self):
+        return (0, 300)
+
+
+class _LegacyFrame(FakeFrame):
+    """缺少 viewport_location 的旧版矩形对象（应回退 location）。"""
+
+    def run_js(self, script, *args, **kwargs):
+        return '{"x": 100, "y": 50, "w": 40, "h": 20}'
+
+    @property
+    def location(self):
+        return (0, 300)
+
+
+def test_page_scroll_reads_document_scroll():
+    tab = FakeTab("tab-scroll")
+    tab.run_js = lambda script, *a, **k: "12 300"
+    assert page_scroll(tab) == (12.0, 300.0)
+
+
+def test_vp_to_page_adds_scroll():
+    tab = FakeTab("tab-scroll")
+    tab.run_js = lambda script, *a, **k: "12 300"
+    assert vp_to_page(tab, 100, 200) == (112.0, 500.0)
+
+
+def test_vp_to_page_no_scroll_when_unavailable():
+    tab = FakeTab("tab-noscript")  # 假 run_js 返回非滚动串
+    assert vp_to_page(tab, 100, 200) == (100.0, 200.0)
+
+
+def test_rect_center_uses_iframe_viewport_location():
+    """iframe 偏移必须取视口坐标：页面滚动 300 时结果不应偏移 300。"""
+    tab = FakeTab("tab-main")
+    frame = _ScrolledFrame("f1")
+    assert _rect_center_in_page(tab, FakeElement(), frame) == (100.0, 50.0)
+
+
+def test_rect_center_falls_back_to_location():
+    tab = FakeTab("tab-main")
+    frame = _LegacyFrame("f1")
+    assert _rect_center_in_page(tab, FakeElement(), frame) == (100.0, 350.0)
 
 
 def test_element_registry_eviction():

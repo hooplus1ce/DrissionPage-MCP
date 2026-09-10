@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import random
+import time
+
 from fastmcp.exceptions import ToolError
 
 from ..cursor import act_cursor, glide_cursor
-from ..manager import manager
+from ..manager import manager, vp_to_page
 from ..models import ActionChainResult, ActionStep, MessageResult
 from fastmcp import FastMCP
 # 领域子服务器：由 server.py mount 组合（官方 composition 模式）
@@ -33,6 +35,22 @@ def _normalize_key(key: str) -> str:
     return KEY_ALIASES.get(key.strip().upper(), key.strip().upper())
 
 
+def _resolve_tab(actions):
+    """从 Actions 对象反查顶层 Tab（假对象无 owner 时返回 None）。"""
+    owner = getattr(actions, "owner", None)
+    if owner is None:
+        return None
+    return getattr(owner, "tab", owner)
+
+
+def _page_point(actions, x: float, y: float) -> tuple[float, float]:
+    """ActionStep 的 x/y 是顶层视口坐标，Actions.move_to(元组) 需要页面坐标。"""
+    tab = _resolve_tab(actions)
+    if tab is None:
+        return (x, y)
+    return vp_to_page(tab, x, y)
+
+
 def _run_step(actions, step: ActionStep) -> None:
     act = step.action
     ele = manager.get_element(step.element_id) if step.element_id else None
@@ -50,7 +68,7 @@ def _run_step(actions, step: ActionStep) -> None:
             actions.move_to(ele, offset_x=step.offset_x, offset_y=step.offset_y, duration=duration)
         elif step.x is not None and step.y is not None:
             glide_cursor(actions, step.x, step.y, duration_ms)
-            actions.move_to((step.x, step.y), duration=duration)
+            actions.move_to(_page_point(actions, step.x, step.y), duration=duration)
         else:
             raise ToolError("move_to 需要 element_id 或 x/y 坐标")
     elif act == "move":
@@ -114,7 +132,8 @@ def action_chain(tab_id: str | None = None, steps: list[ActionStep] | None = Non
     Args:
         tab_id: 标签页 id，省略时用最新标签页
         steps: 操作步骤列表，每步含 action 及所需参数，按顺序执行：
-            - move_to: element_id 或 x/y 坐标，可带 offset_x/offset_y/duration
+            - move_to: element_id 或 x/y 坐标（视口绝对坐标，页面滚动时无需自行加偏移），
+              可带 offset_x/offset_y/duration
             - move: 相对移动 offset_x/offset_y
             - click / r_click / m_click: 可选 element_id 与 times
             - hold / release: 按下/松开鼠标（配合 move 实现拖拽）

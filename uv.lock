@@ -409,6 +409,7 @@ dependencies = [
     { name = "drissionpage" },
     { name = "fastmcp" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -422,6 +423,7 @@ requires-dist = [
     { name = "drissionpage", specifier = "==5.0.0b1" },
     { name = "fastmcp", specifier = ">=4.0.3" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [package.metadata.requires-dev]

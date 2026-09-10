@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import itertools
 import os
+import queue
 
 import pytest
 from fastmcp import Client
 
 from drissionpage_mcp.manager import BrowserManager, BrowserSession
 from drissionpage_mcp.server import mcp
+from drissionpage_mcp.tools.net import METHODS as NET_METHODS, RES_TYPES as NET_RES_TYPES
 
 # 跨 FakeChromium 实例唯一的 tab id 序列，模拟真实环境的 tab_id 全局唯一性
 _tab_seq = itertools.count(1)
@@ -101,12 +103,14 @@ class FakeTab:
         self.ele_results: dict = {}
         self.eles_result: list = []
         self.eles_results: dict = {}
+        self.eles_timeouts: list[tuple[str, float | None]] = []
         self.steps: list[tuple] = []
         self.wait_result = True
         self.wait = FakeWait(self)
         self.set = FakeSet(self)
         self.iframes: list[FakeFrame] = []
         self._action_chain = FakeActions(self)
+        self.listen = FakeListen(self)
 
     @property
     def actions(self):
@@ -155,6 +159,7 @@ class FakeTab:
 
     def eles(self, locator, timeout=None):
         self.steps.append(("eles", locator))
+        self.eles_timeouts.append((locator, timeout))
         if locator == "tag:iframe":
             return list(self.iframes)
         if isinstance(self.eles_results, dict) and locator in self.eles_results:
@@ -172,6 +177,180 @@ class FakeTab:
 
     def cookies(self, all_info=False, **kwargs):
         return list(self.cookies_value)
+
+
+class FakeListenSetter:
+    """模拟 listen.set_method / listen.set_res_type（5.0 链式设置器）。"""
+
+    def __init__(self, listen: "FakeListen", attr: str, names: tuple[str, ...]):
+        self._listen = listen
+        self._attr = attr
+        self._names = names
+
+    def all(self):
+        self._listen.calls.append(("set_all", self._attr))
+        setattr(self._listen, self._attr, True)
+        return self
+
+    def __getattr__(self, item):
+        def _func(only=False):
+            self._listen.calls.append((item, self._attr, only))
+            current = getattr(self._listen, self._attr)
+            if item.startswith("remove_"):
+                values = set(self._names) if current is True else set(current)
+                values.discard(item[len("remove_"):])
+                setattr(self._listen, self._attr, values)
+            elif only:
+                setattr(self._listen, self._attr, {item})
+            elif current is not True:
+                values = set(current)
+                values.add(item)
+                setattr(self._listen, self._attr, values)
+            return self
+
+        return _func
+
+
+class FakeRequest:
+    def __init__(self, url, method="POST", post_data=None, params=None):
+        self.url = url
+        self.method = method
+        self._post_data = post_data
+        self._params = params or {}
+
+    @property
+    def postData(self):
+        return self._post_data
+
+    @property
+    def params(self):
+        return self._params
+
+
+class FakeResponse:
+    def __init__(self, status=200, body=None, headers=None, status_text="OK"):
+        self.status = status
+        self.statusText = status_text
+        self._body = body
+        self._headers = headers or {"content-type": "application/json"}
+
+    @property
+    def body(self):
+        return self._body
+
+    @property
+    def raw_body(self):
+        return self._body
+
+    @property
+    def headers(self):
+        return self._headers
+
+
+class FakeFailInfo:
+    errorText = None
+    canceled = False
+
+
+class FakeDataPacket:
+    """模拟 DataPacket：url/method/resourceType/request/response。"""
+
+    type = "DataPacket"
+
+    def __init__(
+        self,
+        url: str,
+        method: str = "POST",
+        post_data=None,
+        params=None,
+        status: int = 200,
+        body=None,
+        headers=None,
+        tab_id: str = "tab-1",
+    ):
+        self.tab_id = tab_id
+        self.request = FakeRequest(url, method=method, post_data=post_data, params=params)
+        self.response = FakeResponse(status=status, body=body, headers=headers)
+        self.fail_info = FakeFailInfo()
+        self.is_failed = False
+        self.resourceType = "XHR"
+
+    @property
+    def url(self):
+        return self.request.url
+
+    @property
+    def method(self):
+        return self.request.method
+
+
+class FakeListen:
+    """模拟 DrissionPage 5.0 的 tab.listen 监听器（队列出队语义）。"""
+
+    def __init__(self, owner: "FakeTab"):
+        self._owner = owner
+        self.listening = False
+        self._urls = True
+        self._is_regex = False
+        self._method: set | bool = {"GET", "POST"}
+        self._res_type: set | bool = True
+        self._caught: queue.Queue = queue.Queue()
+        self.calls: list[tuple] = []
+        self.wait_result = False
+        self.silent_result = True
+        self.packets: list = []
+        self.set_method = FakeListenSetter(self, "_method", NET_METHODS)
+        self.set_res_type = FakeListenSetter(self, "_res_type", NET_RES_TYPES)
+
+    @property
+    def urls(self):
+        return self._urls
+
+    def _refill(self, clear: bool):
+        if clear:
+            self._caught = queue.Queue()
+        for packet in self.packets:
+            self._caught.put(packet)
+
+    def set_targets(self, urls=True, is_regex=False):
+        self.calls.append(("set_targets", urls, is_regex))
+        self._urls = urls
+        self._is_regex = is_regex
+
+    def start(self, urls=None, is_regex=False):
+        self.calls.append(("start", urls, is_regex))
+        if urls is not None:
+            self.set_targets(urls, is_regex)
+        self._refill(clear=True)
+        self.listening = True
+
+    def wait(self, count=1, timeout=None, fit_count=True, raise_err=None):
+        self.calls.append(("wait", count, timeout, fit_count, raise_err))
+        if not self.listening:
+            self.start()
+        result = self.wait_result
+        if result is False:
+            return False
+        return list(result) if isinstance(result, (list, tuple)) else result
+
+    def wait_silent(self, timeout=None, targets_only=False, limit=0):
+        self.calls.append(("wait_silent", timeout, targets_only, limit))
+        return self.silent_result
+
+    def pause(self, clear=True):
+        self.calls.append(("pause", clear))
+        self.listening = False
+        if clear:
+            self._caught = queue.Queue()
+
+    def resume(self):
+        self.calls.append(("resume",))
+        self.listening = True
+
+    def stop(self):
+        self.calls.append(("stop",))
+        self.listening = False
+        self._caught = queue.Queue()
 
 
 class FakeNav:
@@ -379,6 +558,7 @@ class FakeFrame:
         self.states = FakeStates(self)
         self.ele_result = None
         self.eles_results: dict[str, list] = {}
+        self.eles_timeouts: list[tuple[str, float | None]] = []
         self.actions: list[tuple] = []
 
     def attr(self, name):
@@ -408,6 +588,7 @@ class FakeFrame:
 
     def eles(self, locator, timeout=None):
         self.actions.append(("eles", locator))
+        self.eles_timeouts.append((locator, timeout))
         if locator in self.eles_results:
             return list(self.eles_results[locator])
         return [self.ele_result] if self.ele_result else []
@@ -442,6 +623,9 @@ class FakeContext:
 
     def new_tab(self, url=None, background=False, **kwargs):
         tab = FakeTab(self.tab_ids[0], url=url or "about:blank")
+        if url:
+            # 真实 DP 的 new_tab(url=...) 会导航，记录成 get 步骤便于用例观测
+            tab.steps.append(("get", url))
         self._browser.tabs[self.tab_ids[0]] = tab
         return tab
 
@@ -477,6 +661,9 @@ class FakeChromium:
 
     def new_tab(self, url=None, background=False, **kwargs):
         tab = FakeTab(f"tab-{next(_tab_seq)}", url=url or "about:blank")
+        if url:
+            # 同 FakeContext.new_tab：真实 DP 会导航，补记步骤
+            tab.steps.append(("get", url))
         self.tabs[tab.tab_id] = tab
         return tab
 

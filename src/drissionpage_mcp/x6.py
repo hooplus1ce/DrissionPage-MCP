@@ -17,8 +17,8 @@ from typing import Any
 
 from fastmcp.exceptions import ToolError
 
-from .cursor import act_cursor, glide_cursor, start_drag_ghost, stop_drag_ghost, update_cursor_pos
-from .manager import manager
+from .cursor import act_cursor, glide_cursor, start_drag_ghost, stop_drag_ghost
+from .manager import manager, vp_to_page
 from .overlays import drain_overlays
 from .x6_scripts import X6_SCRIPTS
 
@@ -32,9 +32,18 @@ class X6Session:
     meta: dict = field(default_factory=dict)
 
     def to_viewport(self, x: float, y: float) -> tuple[float, float]:
-        """将 iframe 局部坐标转换为浏览器顶层视口绝对物理坐标。"""
-        loc = self.frame.rect.location
+        """iframe 文档内视口坐标 → 顶层文档视口坐标。
+
+        必须用 iframe 的 viewport_location：DP 的 rect.location 是页面坐标，
+        与 getBoundingClientRect 的视口坐标相加会在页面滚动时整体偏移滚动量。
+        """
+        rect = self.frame.rect
+        loc = getattr(rect, "viewport_location", None) or rect.location
         return (float(loc[0]) + float(x), float(loc[1]) + float(y))
+
+    def to_page(self, x: float, y: float) -> tuple[float, float]:
+        """顶层视口坐标 → 页面坐标（Actions.move_to(元组) 所需）。"""
+        return vp_to_page(self.tab, x, y)
 
 
 def _run_x6(frame: Any, script_name: str, *args: Any) -> dict:
@@ -115,8 +124,13 @@ def _find_safe_node_point(
     )
     return (float(mid_x), float(mid_y))
 
-def bind_x6(tab_id: str | None = None) -> X6Session:
-    """定位激活模块 iframe -> 绑定 X6 Graph 实例 -> 建立会话。"""
+def bind_x6(tab_id: str | None = None, auto_fit: bool = True) -> X6Session:
+    """定位激活模块 iframe -> 绑定 X6 Graph 实例 -> 建立会话。
+
+    auto_fit：画布视口补偿（针对前端未居中/未开启 panning、负坐标节点溢出视口的缺陷）。
+    每次工具调用只在此处执行一次，避免在取坐标的过程中反复改动视口——
+    zoomToFit 会改变 translate/zoom，取坐标前改动视口会让坐标与后续操作不同步。
+    """
     tab, _ = manager.get_tab(tab_id)
     frame = manager.resolve_frame(tab, "active")
     data = _run_x6(frame, "bind")
@@ -131,6 +145,11 @@ def bind_x6(tab_id: str | None = None) -> X6Session:
         )
     session = X6Session(frame=frame, tab=tab)
     session.meta = data
+    if auto_fit:
+        try:
+            fit_view(session)
+        except Exception:
+            pass
     return session
 
 
@@ -244,31 +263,39 @@ def get_topology(session: X6Session, auto_fit: bool = True) -> dict:
     }
 
 
-def find_node(session: X6Session, node_id_or_name: str) -> dict:
-    """按 cellId 或节点显示名称查找单个节点信息。"""
+def _find_in_topo(topo: dict, node_id_or_name: str) -> dict:
+    """在已提取的拓扑中查找节点（不重复提取、不改动视口）。
+
+    匹配优先级：cellId 精准 → 文本精准 → 文本包含。
+    """
     clean = node_id_or_name.strip().lower()
-    topo = get_topology(session)
-    nodes = topo["nodes"]
+    nodes = topo.get("nodes") or []
 
-    # 1. 优先按 cellId 精准查找
     for n in nodes:
-        if n["cellId"].lower() == clean:
+        if str(n.get("cellId") or "").lower() == clean:
             return n
 
-    # 2. 按文本精准匹配
     for n in nodes:
-        if n["text"].lower() == clean:
+        if str(n.get("text") or "").lower() == clean:
             return n
 
-    # 3. 按文本包含匹配
     for n in nodes:
-        if clean in n["text"].lower():
+        if clean in str(n.get("text") or "").lower():
             return n
 
-    avail = [f"{n['cellId']}: {n['text']}" for n in nodes]
+    avail = [f"{n.get('cellId')}: {n.get('text')}" for n in nodes]
     raise ToolError(
         f"未在画布中找到节点 '{node_id_or_name}'。当前画布可用节点列表: {avail}"
     )
+
+
+def find_node(session: X6Session, node_id_or_name: str) -> dict:
+    """按 cellId 或节点显示名称查找单个节点信息。
+
+    只做一次拓扑提取（auto_fit=False）：视口补偿由 bind_x6 统一负责，
+    避免取坐标过程中 zoomToFit 改动 translate/zoom。
+    """
+    return _find_in_topo(get_topology(session, auto_fit=False), node_id_or_name)
 
 
 def move_node(
@@ -276,7 +303,6 @@ def move_node(
     node_id_or_name: str,
     dx: int,
     dy: int,
-    steps: int = 15,
 ) -> dict:
     """真实鼠标拖拽位移节点（带平滑插值轨迹与视口溢出自动平移保护）。"""
     node = find_node(session, node_id_or_name)
@@ -333,7 +359,7 @@ def move_node(
 
     glide_cursor(session.tab, start_x, start_y, 250)
     time.sleep(0.15)
-    actions.move_to((start_x, start_y))
+    actions.move_to(session.to_page(start_x, start_y))
     actions.wait(0.08)
     act_cursor(session.tab, "down", start_x, start_y)
     actions.hold()
@@ -365,11 +391,12 @@ def connect_nodes(
     to_node: str,
     from_port: str = "out-0",
     to_port: str = "in-0",
-    steps: int = 20,
 ) -> dict:
     """从源节点的出口桩拖拽连接至目标节点的入口桩（真实人工鼠标交互连线）。"""
-    s_node = find_node(session, from_node)
-    t_node = find_node(session, to_node)
+    # 一次拓扑提取供源/目标两次查找复用（原实现会提取两次）
+    topo = get_topology(session, auto_fit=False)
+    s_node = _find_in_topo(topo, from_node)
+    t_node = _find_in_topo(topo, to_node)
 
     s_ports = s_node.get("ports", {})
     t_ports = t_node.get("ports", {})
@@ -409,7 +436,7 @@ def connect_nodes(
     if p1:
         actions.move_to(p1)
     else:
-        actions.move_to((start_pt["x"], start_pt["y"]))
+        actions.move_to(session.to_page(start_pt["x"], start_pt["y"]))
     actions.wait(0.08)
 
     # 2. 模拟长按按下出口桩（激活连线手柄）
@@ -429,7 +456,7 @@ def connect_nodes(
     if p2:
         actions.move_to(p2)
     else:
-        actions.move_to((end_pt["x"], end_pt["y"]))
+        actions.move_to(session.to_page(end_pt["x"], end_pt["y"]))
     time.sleep(0.08)
 
     # 5. 松开鼠标完成连线
@@ -469,7 +496,7 @@ def click_node(
 
     glide_cursor(session.tab, pos_x, pos_y, 200)
     time.sleep(0.1)
-    actions.move_to((pos_x, pos_y))
+    actions.move_to(session.to_page(pos_x, pos_y))
     actions.wait(0.05)
     act_cursor(session.tab, "click", pos_x, pos_y)
     actions.click()
@@ -562,7 +589,12 @@ def add_node(
     src_x, src_y = _ele_midpoint(palette_item, 0, 0)
     # 确定画布目标落点 (dst_x, dst_y)
     frame_rect = getattr(session.frame, "rect", None)
-    f_loc = getattr(frame_rect, "location", (170, 80)) if frame_rect else (170, 80)
+    # iframe 在顶层视口中的位置：rect.location 是页面坐标，不能用于视口坐标运算
+    f_loc = (
+        getattr(frame_rect, "viewport_location", None)
+        or getattr(frame_rect, "location", None)
+        or (170, 80)
+    )
     f_size = getattr(frame_rect, "size", (1200, 700)) if frame_rect else (1200, 700)
 
     if target_x is not None and target_y is not None:
@@ -751,7 +783,7 @@ def delete_node(session: X6Session, node_id_or_name: str) -> dict:
     if node_el:
         actions.move_to(node_el)
     else:
-        actions.move_to((pos_x, pos_y))
+        actions.move_to(session.to_page(pos_x, pos_y))
     act_cursor(session.tab, "click", pos_x, pos_y)
     actions.click()
     actions.wait(0.08)

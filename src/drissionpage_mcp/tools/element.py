@@ -11,7 +11,14 @@ import time
 from fastmcp.exceptions import ToolError
 
 from ..cursor import act_cursor, glide_cursor
-from ..manager import manager, normalize_locator, prefer_visible, prepare_locator, real_click, _rect_center_in_page
+from ..manager import (
+    _rect_center_in_page,
+    manager,
+    prepare_locator,
+    prefer_visible_in,
+    real_click,
+    vp_to_page,
+)
 from ..overlays import arm_overlays, drain_overlays
 from ..models import ElementDetail, ElementListResult, ElementSummary, MessageResult
 from fastmcp import FastMCP
@@ -86,7 +93,7 @@ def find_element(
     locator: str,
     tab_id: str | None = None,
     index: int = 1,
-    timeout: float = 10,
+    timeout: float = 5,
     frame: str | None = None,
 ) -> ElementSummary:
     """在标签页中定位一个元素，返回摘要与 element_id（供交互工具使用）。
@@ -96,7 +103,7 @@ def find_element(
             'css:.list>li'、'xpath://a[@href]'、'ax:@role=button'；不带前缀时自动匹配
         tab_id: 标签页 id，省略时用最新标签页
         index: 第几个匹配元素（从 1 开始，负数表示从末尾倒数）
-        timeout: 未找到时的最长等待秒数
+        timeout: 未找到时的探测等待秒数（探测语义；要等待元素出现请用 wait_element）
         frame: 搜索范围：省略=主文档+自动穿透 iframe；'main'=仅主文档；
             'active'=激活态 iframe；也可用序号或 iframe 的 id/name（见 frame_list）
     """
@@ -105,7 +112,7 @@ def find_element(
     # 先批量检索再按可见性过滤：避免命中已关闭弹窗残留 DOM 里的隐藏元素
     eles, container = manager.search(tab, locator, many=True, timeout=timeout, frame=frame)
     _check_found(eles, locator)
-    picked = prefer_visible(list(eles))
+    picked = prefer_visible_in(container, list(eles))
     try:
         ele = picked[index - 1] if index > 0 else picked[index]
     except IndexError:
@@ -124,7 +131,7 @@ def find_element(
 def find_elements(
     locator: str,
     tab_id: str | None = None,
-    timeout: float = 10,
+    timeout: float = 5,
     limit: int = 20,
     frame: str | None = None,
 ) -> ElementListResult:
@@ -133,7 +140,7 @@ def find_elements(
     Args:
         locator: 定位符，同 find_element
         tab_id: 标签页 id，省略时用最新标签页
-        timeout: 未找到时的最长等待秒数
+        timeout: 未找到时的探测等待秒数（要等待元素出现请用 wait_element）
         limit: 最多返回与登记的元素数量（硬上限 200；超出时响应含 total/truncated）
         frame: 搜索范围，同 find_element 的 frame 参数
     """
@@ -143,7 +150,7 @@ def find_elements(
     if not eles:
         raise ToolError(f"未找到元素: {locator}。可先调整定位符，或用 wait_element 等待元素出现")
     limit = min(max(limit, 1), 200)
-    ordered = prefer_visible(list(eles))
+    ordered = prefer_visible_in(container, list(eles))
     total = len(ordered)
     result = []
     for ele in ordered[:limit]:
@@ -253,16 +260,17 @@ def click(
     button: str = "left",
     by_js: bool = False,
     timeout: float = 5,
-    observe: bool = True,
+    observe: bool = False,
 ) -> dict:
     """通用全能点击：支持 element_id、选择器（CSS/XPath/文本/AX）、或视口绝对坐标。
 
-    统一驱动 Win11 虚拟光标 60FPS 滑行 + 真实鼠标事件，支持单双击/右键，并自动感知
-    点击后弹出的新浮层（Modal/Toast，封顶 4 条）。
+    统一驱动 Win11 虚拟光标 60FPS 滑行 + 真实鼠标事件，支持单双击/右键；
+    默认不采集点击后的浮层（省时间），需要时传 observe=True（Modal/Toast 封顶 4 条）。
 
     Args:
         target: 目标元素标识（element_id、'.ant-btn'、'//button'、'text:保 存'、'保 存'）
-        point: 视口绝对坐标 {'x': 500, 'y': 300}（Canvas 表格或无 DOM 点位点击）
+        point: 视口绝对坐标 {'x': 500, 'y': 300}（Canvas 表格或无 DOM 点位点击；
+            页面已滚动时内部会自动换算，无需自行加滚动量）
         x: 目标 X 坐标（与 y 搭配，可替代 point）
         y: 目标 Y 坐标（与 x 搭配，可替代 point）
         frame: 'active'=激活模块 iframe；None=激活 iframe 优先，主文档兜底
@@ -271,7 +279,7 @@ def click(
         button: 'left' | 'right' | 'middle'
         by_js: 是否改用 JS 点击（元素被遮挡时可用）
         timeout: 等待元素可见的超时秒数
-        observe: 是否观察点击后的新浮层
+        observe: 是否观察点击后的新浮层（默认 False 省去每次点击的注入与等待）
     """
     tab, session = manager.get_tab(tab_id)
 
@@ -290,7 +298,8 @@ def click(
         time.sleep(0.08)
         act_cursor(tab, "click", pt_x, pt_y)
         actions = tab.actions
-        actions.move_to((pt_x, pt_y))
+        # 入参是视口绝对坐标，DP 的 move_to(元组) 需页面坐标
+        actions.move_to(vp_to_page(tab, pt_x, pt_y))
         if button == "right":
             actions.r_click()
         elif button == "middle":
@@ -331,7 +340,7 @@ def click(
     else:
         # 非 element_id，按选择器/文本检索
         raw_res, container = manager.search(tab, target, timeout=timeout, frame=frame)
-        ele = prefer_visible(raw_res) if isinstance(raw_res, list) else raw_res
+        ele = prefer_visible_in(container, raw_res) if isinstance(raw_res, list) else raw_res
         if not ele:
             raise ToolError(f"未找到目标元素: {target!r}")
         element_id = manager.register_element(ele, tab, session.browser_id, container)

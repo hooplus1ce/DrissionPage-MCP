@@ -68,11 +68,20 @@ iframe 功能模块（如 APS 等管理系统）：
   get_page_info 与 page_controls 已自动提取并返回 breadcrumb / module_path，严禁根据 iframe 的 src/URL 猜测模块路径！
 - AntD 弹窗/下拉/日期/消息气泡以 portal 渲染在其所属功能模块的文档中，
   antd_select / antd_date_pick / antd_modal_click / get_toasts 已自动处理
+- get_toasts 是即时快照：没有气泡时立即返回空列表（绝不空等）；
+  要等某条气泡出现再做断言，用 wait_message(pattern=..., timeout=...)
 - screenshot 可对视口、整页、指定元素或激活模块 iframe 进行真实截图，回传图片内容块用于视觉核验
+
+网络数据包监控（feature 套件 'net'，需先 enable_feature('net') 解锁）：
+- 标准顺序：net_listen_start(urls=...) → 执行 UI 动作 → net_listen_wait(...) 取包；
+  start 之前产生的数据包一律取不到（队列出队语义，同包不会重复读到）
+- 即时取包用 net_listen_snapshot（不空等）；等网络整体安静用 net_listen_wait_silent；
+  用例结束用 net_listen_stop 释放 Network 域
+- 断言接口载荷错位类缺陷：按 url 过滤取包后读 post_data / params
+  （如 net_listen_start(urls="approverOptions") → 切换下拉 → net_listen_wait() 看 ?type=）
 真实交互（UI 测试首选）：
-- click 默认通过 Actions 派发真实鼠标事件（移动→按下→抬起），支持选择器/坐标/元素 id
-- action_chain 可编排复杂真实操作：move_to/click/hold+move+release 拖拽/scroll/type/key，全部为 CDP Input 级别
-- press_key 用于 ENTER/ESC 等单键；element_input 输入文本
+- click 派发真实鼠标事件（支持选择器/坐标/元素 id）；action_chain 编排 move_to/hold+move+release
+  拖拽/scroll/type/key（CDP Input 级别）；press_key 单键；element_input 输入文本
 
 定位符语法（DrissionPage 5.0）：
 - '#id' / '.class' / 'tag:div' / '@attr=value' —— 常用简写
@@ -150,6 +159,7 @@ from .tools import (  # noqa: E402
     element,
     frame,
     navigate,
+    net,
     scenario,
     snapshot,
     vtable,
@@ -168,6 +178,7 @@ for _sub in (
     snapshot.mcp,
     scenario.mcp,
     x6.mcp,
+    net.mcp,
 ):
     mcp.mount(_sub)
 # ---------- 搜索转换器（可选开启，当工具很多时大幅节省 Token） ----------
@@ -268,7 +279,7 @@ async def disable_dev_tool(name: str = "run_js", ctx: Context | None = None) -> 
     return f"已锁定并隐藏工具 [{clean_name}]。"
 # ---------- 业务场景特性套件（按需插拔，降低 Token 消耗） ----------
 
-SUPPORTED_FEATURES: set[str] = {"x6", "vtable"}
+SUPPORTED_FEATURES: set[str] = {"x6", "vtable", "net"}
 
 FEATURE_SUITES: dict[str, set[str]] = {
     "x6": {
@@ -284,6 +295,15 @@ FEATURE_SUITES: dict[str, set[str]] = {
         "vtable_inspect",
         "vtable_find_cell",
         "vtable_click_cell",
+    },
+    "net": {
+        "net_listen_start",
+        "net_listen_wait",
+        "net_listen_snapshot",
+        "net_listen_wait_silent",
+        "net_listen_pause",
+        "net_listen_resume",
+        "net_listen_stop",
     },
 }
 
@@ -314,7 +334,7 @@ def enable_all_features() -> None:
 
 
 def _init_features() -> None:
-    raw = os.getenv("DISABLED_FEATURES", "x6").strip()
+    raw = os.getenv("DISABLED_FEATURES", "x6,net").strip()
     if raw:
         for f in raw.split(","):
             clean = f.strip().lower()
@@ -330,10 +350,12 @@ _init_features()
     annotations={"title": "启用场景特性套件", "readOnlyHint": False},
 )
 async def enable_feature(name: str, ctx: Context | None = None) -> str:
-    """按需启用特定业务场景的工具套件（如进入审批流设计页面启用 'x6'，进入大数据表格启用 'vtable'）。
+    """按需启用特定业务场景的工具套件（如进入审批流设计页面启用 'x6'，进入大数据表格启用 'vtable'，
+    需要抓取/断言接口请求与响应时启用 'net'）。
 
     Args:
-        name: 特性套件名称，支持 'x6'（流程图 7 个工具）、'vtable'（表格 3 个工具）
+        name: 特性套件名称，支持 'x6'（流程图 7 个工具）、'vtable'（表格 3 个工具）、
+              'net'（网络数据包监听 7 个工具）
     """
     clean_name = name.strip().lower()
     if clean_name not in SUPPORTED_FEATURES:
@@ -359,7 +381,7 @@ async def disable_feature(name: str, ctx: Context | None = None) -> str:
     """离开特定业务场景后禁用工具套件，减少向模型暴露的 Schema Token 开销。
 
     Args:
-        name: 特性套件名称，支持 'x6'、'vtable'
+        name: 特性套件名称，支持 'x6'、'vtable'、'net'
     """
     clean_name = name.strip().lower()
     if clean_name not in SUPPORTED_FEATURES:
