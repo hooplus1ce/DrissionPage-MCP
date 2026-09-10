@@ -274,6 +274,21 @@ ax:@name=搜索@role=button               无障碍树定位（5.0 新增）
 两者若与 `getBoundingClientRect()` 的视口坐标混用，页面一旦滚动，点击/拖拽就会整体偏移 `scrollTop` 并被强制滚动。
 因此：iframe 偏移一律取 `viewport_location`，`move_to(元组)` 一律走 `vp_to_page`。
 
+**真机实测依据（APS demo18，接管 9222）**
+
+APS 管理外壳是**固定视口布局**（`html`/`body` 高度恒等于视口高、内容不溢出），所以顶层文档天然不可滚动——
+这个缺陷在 APS 上不会被自然触发，只能在几何上受控构造验证（注入不可见高占位块 + 临时解除 `html` 的
+`overflow/height`，验证后完整还原）。
+
+| 场景 | 观测 |
+|---|---|
+| 顶层文档 `scrollTop=200`，新实现 `click(point=视口坐标(660,420))` | 鼠标事件落在 `client(660,420)`，**与期望视口点逐像素一致**；点击后 `scrollTop` 仍为 200（未被强制滚动） |
+| 同场景改用旧写法（视口坐标直接交给 DP `move_to`，按页面坐标解释） | **完全没有点中目标**（派发到目标上方约 200px 处）——即被本契约修掉的偏移症状 |
+| `scrollTop=0` 对照组 | 命中 `client(660,620)`，与未滚动情形一致 |
+| 换算同类量对照（滚动 200 时） | `vp_to_page(viewport_location)` == DP `location`；`vp_to_page(viewport_midpoint)` == DP `midpoint`；`page − viewport == scroll`，全部 ≤2px |
+| iframe 内元素（X6 节点） | 工具返回的 `viewport_center` == DP `viewport_midpoint`（0.0px）== `getBoundingClientRect`+`viewport_location` 偏移路径（-0.5px） |
+| VTable 格坐标链 | 响应 `viewport_x/y` == `iframe 视口偏移 + canvas 偏移 + 格局部坐标`（0.0px） |
+
 ## 开发与测试
 
 ```bash
